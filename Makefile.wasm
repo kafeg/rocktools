@@ -1,0 +1,74 @@
+﻿# Makefile.wasm - Build rocktools as WebAssembly modules using Emscripten
+#
+# Usage:  emmake make -f Makefile.wasm
+# Or via Docker:  ./build-wasm.sh
+
+EMCC = emcc
+
+EMFLAGS = -O2 -std=c99 -Wall
+EMFLAGS += -s MODULARIZE=1
+EMFLAGS += -s ALLOW_MEMORY_GROWTH=1
+EMFLAGS += -s EXPORTED_RUNTIME_METHODS='["callMain","FS"]'
+EMFLAGS += -s EXPORT_ES6=1
+EMFLAGS += -s INVOKE_RUN=0
+EMFLAGS += -s NO_EXIT_RUNTIME=0
+EMFLAGS += -s FILESYSTEM=1
+EMFLAGS += -s ENVIRONMENT='web,worker'
+EMFLAGS += -s STACK_SIZE=1048576
+
+HFILES = structs.h
+COMMON = inout.c utils.c
+
+OUTDIR = wasm
+
+all: $(OUTDIR)/rockcreate.mjs $(OUTDIR)/rockdetail.mjs $(OUTDIR)/rocksmooth.mjs $(OUTDIR)/rockerode.mjs $(OUTDIR)/rockconvert.mjs $(OUTDIR)/rocktrim.mjs $(OUTDIR)/rockinfo.mjs
+
+$(OUTDIR):
+	mkdir -p $(OUTDIR)
+
+$(OUTDIR)/rockcreate.mjs: rockcreate.c createutil.c convexhull.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) -DADJ_NODE -DCONN \
+		-s EXPORT_NAME=createRockcreate \
+		rockcreate.c createutil.c convexhull.c $(COMMON) \
+		-o $@
+
+$(OUTDIR)/rockdetail.mjs: rockdetail.c detailutil.c smoothutil.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) -DADJ_NODE -DCONN -DDETAIL \
+		-s EXPORT_NAME=createRockdetail \
+		rockdetail.c detailutil.c smoothutil.c $(COMMON) \
+		-o $@
+
+$(OUTDIR)/rocksmooth.mjs: rocksmooth.c smoothutil.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) -DADJ_NODE -DCONN \
+		-s EXPORT_NAME=createRocksmooth \
+		rocksmooth.c smoothutil.c $(COMMON) \
+		-o $@
+
+$(OUTDIR)/rockerode.mjs: rockerode.c erodeutil.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) -DADJ_NODE -DERODE -DCONN \
+		-s EXPORT_NAME=createRockerode \
+		rockerode.c erodeutil.c $(COMMON) \
+		-o $@
+
+$(OUTDIR)/rockconvert.mjs: rockconvert.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) \
+		-s EXPORT_NAME=createRockconvert \
+		rockconvert.c $(COMMON) \
+		-o $@
+
+$(OUTDIR)/rocktrim.mjs: rocktrim.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) \
+		-s EXPORT_NAME=createRocktrim \
+		rocktrim.c $(COMMON) \
+		-o $@
+
+$(OUTDIR)/rockinfo.mjs: rockinfo.c $(COMMON) $(HFILES) | $(OUTDIR)
+	$(EMCC) $(EMFLAGS) \
+		-s EXPORT_NAME=createRockinfo \
+		rockinfo.c $(COMMON) \
+		-o $@
+
+clean:
+	rm -rf $(OUTDIR)
+
+.PHONY: all clean

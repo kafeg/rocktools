@@ -1,0 +1,13 @@
+{
+  "name": "rocktools-cli",
+  "version": "0.2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "export": "tsx export-glb.ts"
+  },
+  "dependencies": {
+    "puppeteer": "^24.43.1",
+    "tsx": "^4.19.0"
+  }
+}

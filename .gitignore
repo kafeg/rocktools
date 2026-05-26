@@ -12,3 +12,9 @@ rocksmooth
 rocksplit
 rocktrim
 rockxray
+
+# Studio
+node_modules/
+dist/
+*.log
+.env

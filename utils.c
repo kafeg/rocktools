@@ -168,6 +168,8 @@ node_ptr add_to_nodes_list (tri_pointer the_tri, int* num_nodes, int index, VEC*
 #ifdef CONN
       curr_node->num_conn = 0;
       curr_node->max_conn = 0;
+      curr_node->conn_tri = NULL;
+      curr_node->conn_tri_node = NULL;
       if (the_tri) add_conn_tri (curr_node, the_tri, index);
       //curr_node->conn_tri = (tri_pointer*)malloc(curr_node->max_conn*sizeof(tri_pointer));
       //curr_node->conn_tri_node = (int*)malloc(curr_node->max_conn*sizeof(int));

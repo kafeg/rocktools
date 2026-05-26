@@ -49,7 +49,7 @@ node_ptr create_midpoint_spline(node_ptr,node_ptr,int*);
 node_ptr create_center_point(int,node_ptr,node_ptr,node_ptr);
 
 // from smoothutil.c
-extern void compute_normals_2 (tri_pointer,int);
+extern int compute_normals_2 (tri_pointer,int);
 
 extern double normal_shake;
 extern double normal_exponent;
@@ -1977,6 +1977,8 @@ node_ptr create_midpoint(node_ptr node1, node_ptr node2) {
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!
@@ -2012,6 +2014,8 @@ node_ptr create_midpoint_2(int depth, node_ptr node1, node_ptr node2) {
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!
@@ -2064,6 +2068,8 @@ node_ptr create_midpoint_3(int depth, node_ptr node1, node_ptr node2, node_ptr n
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!
@@ -2124,6 +2130,8 @@ node_ptr create_midpoint_4(int depth, node_ptr node1, node_ptr node2, node_ptr n
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!
@@ -2167,6 +2175,8 @@ node_ptr create_midpoint_5( int depth, node_ptr node1, node_ptr node2,
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!
@@ -2445,6 +2455,8 @@ node_ptr create_midpoint_spline (node_ptr n1, node_ptr n2, int *node_cnt) {
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!
@@ -2506,6 +2518,8 @@ node_ptr create_center_point(int depth, node_ptr node1, node_ptr node2, node_ptr
 #ifdef CONN
    new_node->num_conn = 0;
    new_node->max_conn = 0;
+   new_node->conn_tri = NULL;
+   new_node->conn_tri_node = NULL;
 #endif
 
    // add it to the list!

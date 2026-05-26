@@ -1,0 +1,6 @@
+studio/node_modules
+studio/client/node_modules
+studio/server/node_modules
+studio/client/dist
+studio/server/dist
+*.o

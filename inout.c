@@ -931,6 +931,8 @@ tri_pointer read_msh (char filename[MAX_FN_LEN],tri_pointer tri_head) {
 #ifdef CONN
       new_node->num_conn = 0;
       new_node->max_conn = 0;
+      new_node->conn_tri = NULL;
+      new_node->conn_tri_node = NULL;
 #endif
       new_node->next_node = node_head;
       node_head = new_node;

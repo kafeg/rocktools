@@ -1,0 +1,15 @@
+services:
+  rocktools-studio:
+    build:
+      context: ..
+      dockerfile: studio/Dockerfile
+    ports:
+      - "3800:3800"
+    volumes:
+      - rocktools-output:/app/output
+    environment:
+      - NODE_ENV=production
+      - PORT=3800
+
+volumes:
+  rocktools-output:
