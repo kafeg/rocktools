@@ -37,7 +37,7 @@ export default function PipelineEditor() {
   const { steps, sourceType, baseMesh, createParams, tools, isGenerating, instantGenerate } = useStudioStore();
   const { generate } = useApi();
   const store = useStudioStore;
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const prevStateRef = useRef<string>("");
 
   const triggerGenerate = useCallback(() => {

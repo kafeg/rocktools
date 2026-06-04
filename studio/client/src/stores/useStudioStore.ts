@@ -1,8 +1,15 @@
 import { create } from "zustand";
 import type { PipelineStep, ToolDefinition, JournalEntry, MeshInfo } from "../types";
-import type { HeightmapParams } from "../utils/heightmap";
 import { TOOL_DEFINITIONS, SAMPLE_MESHES } from "../toolDefinitions";
 import { parseOBJToMeshData, meshDataToOBJ, type MeshData } from "../utils/meshModifiers";
+import {
+  deriveTerrainStyle,
+  DEFAULT_TERRAIN_PARAMS,
+  type TerrainParams,
+  type TerrainScatter,
+  type TerrainMeta,
+} from "../utils/terrain";
+import { generateTerrainAsync } from "../workers/terrainClient";
 import { MESH_MODIFIER_MAP } from "../utils/modifierMap";
 import {
   ASTEROID_TEXTURE_LIST,
@@ -639,11 +646,19 @@ interface StudioState {
   sceneRef: unknown;
   cameraRef: unknown;
 
+  // ── Terrain (surface) mode ──────────────────────────────────────────
+  // "globe" = the asteroid; "surface" = a generated terrain patch of it.
   viewMode: "globe" | "surface";
-  terrainMeshObj: string | null;
+  /** The single knob that produces terrain variants. Asteroid is unaffected. */
+  surfaceSeed: number;
+  terrainParams: TerrainParams;
+  terrainMesh: MeshData | null;
+  terrainScatter: TerrainScatter | null;
+  terrainMeta: TerrainMeta | null;
   terrainInfo: MeshInfo | null;
   isGeneratingTerrain: boolean;
-  terrainStateKey: string | null;
+  /** Saved surfaceSeeds for the current asteroid (multiple terrains per body). */
+  terrainVariants: number[];
 
   collapsedSteps: Record<string, boolean>;
 
@@ -683,9 +698,13 @@ interface StudioState {
   setRendererRefs: (gl: unknown, scene: unknown, camera: unknown) => void;
 
   setViewMode: (mode: "globe" | "surface") => void;
-  setTerrainResult: (obj: string, info: MeshInfo, stateKey: string) => void;
-  setGeneratingTerrain: (v: boolean) => void;
-  deriveTerrainParams: () => HeightmapParams;
+  setSurfaceSeed: (seed: number) => void;
+  setTerrainParam: (name: keyof TerrainParams, value: number) => void;
+  setTerrainParams: (partial: Partial<TerrainParams>) => void;
+  generateTerrain: () => void;
+  randomizeSurfaceSeed: () => void;
+  addTerrainVariant: () => void;
+  selectTerrainVariant: (seed: number) => void;
   clearPipeline: () => void;
   toggleStepCollapsed: (id: string) => void;
   toggleStepEnabled: (id: string) => void;
@@ -702,11 +721,30 @@ interface StudioState {
   loadPreset: (preset: FullPreset) => void;
   clearJournal: () => void;
   randomizePipeline: (mode?: RandomMode) => void;
-  importPipelineConfig: (config: { sourceType: string; baseMesh: string; createParams: Record<string, number | string | boolean>; steps: Array<{ tool: string; params: Record<string, number | string | boolean>; enabled?: boolean }>; scene?: { lights: Array<Record<string, unknown>>; background: Record<string, unknown> } }) => void;
-  exportPipelineConfig: () => { version: 1; sourceType: string; baseMesh: string; createParams: Record<string, number | string | boolean>; steps: Array<{ tool: string; params: Record<string, number | string | boolean>; enabled?: boolean }>; scene: { lights: Array<Record<string, unknown>>; background: Record<string, unknown> } };
+  importPipelineConfig: (config: { sourceType: string; baseMesh: string; createParams: Record<string, number | string | boolean>; steps: Array<{ tool: string; params: Record<string, number | string | boolean>; enabled?: boolean }>; scene?: { lights: Array<Record<string, unknown>>; background: Record<string, unknown> }; terrain?: { params: Partial<TerrainParams>; surfaceSeed: number; variants: Array<number | { seed: number; params?: Partial<TerrainParams> }> } }) => void;
+  exportPipelineConfig: () => { version: 1; sourceType: string; baseMesh: string; createParams: Record<string, number | string | boolean>; steps: Array<{ tool: string; params: Record<string, number | string | boolean>; enabled?: boolean }>; scene: { lights: Array<Record<string, unknown>>; background: Record<string, unknown> }; terrain: { params: TerrainParams; surfaceSeed: number; variants: number[] } };
 }
 
 let stepCounter = 0;
+/** Monotonic token so stale terrain worker results are discarded. */
+let terrainReqToken = 0;
+
+/** Compute MeshInfo (vertex/tri counts + bounds) from a MeshData. */
+function meshInfoFromMeshData(mesh: MeshData): MeshInfo {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < mesh.vertexCount; i++) {
+    const x = mesh.positions[i * 3]!, y = mesh.positions[i * 3 + 1]!, z = mesh.positions[i * 3 + 2]!;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  return {
+    nodes: mesh.vertexCount,
+    tris: mesh.triCount,
+    bounds: { x: [minX, maxX], y: [minY, maxY], z: [minZ, maxZ] },
+  };
+}
 
 function loadJournal(): JournalEntry[] {
   try {
@@ -804,10 +842,14 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   sceneRef: null,
   cameraRef: null,
   viewMode: "globe",
-  terrainMeshObj: null,
+  surfaceSeed: 1,
+  terrainParams: { ...DEFAULT_TERRAIN_PARAMS },
+  terrainMesh: null,
+  terrainScatter: null,
+  terrainMeta: null,
   terrainInfo: null,
   isGeneratingTerrain: false,
-  terrainStateKey: null,
+  terrainVariants: [],
   collapsedSteps: { source: true },
 
   setTools: (tools) => set({ tools }),
@@ -876,7 +918,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
   setError: (error) => set({ error }),
 
   setMeshResult: (id, obj, info, stderr, cliArgs) =>
-    set({ currentMeshId: id, currentMeshObj: obj, currentInfo: info, lastStderr: stderr, lastCliArgs: cliArgs }),
+    // A new asteroid invalidates any cached terrain (it belonged to the old body).
+    set({
+      currentMeshId: id, currentMeshObj: obj, currentInfo: info, lastStderr: stderr, lastCliArgs: cliArgs,
+      terrainMesh: null, terrainScatter: null, terrainMeta: null, terrainInfo: null,
+    }),
 
   addJournalEntry: (entry) => {
     const journal = [entry, ...get().journal].slice(0, 100);
@@ -969,25 +1015,66 @@ export const useStudioStore = create<StudioState>((set, get) => ({
     set({ rendererRef: gl, sceneRef: scene, cameraRef: camera });
   },
 
-  setViewMode: (viewMode) => set({ viewMode }),
-  setTerrainResult: (obj, info, stateKey) => set({ terrainMeshObj: obj, terrainInfo: info, terrainStateKey: stateKey }),
-  setGeneratingTerrain: (isGeneratingTerrain) => set({ isGeneratingTerrain }),
+  setViewMode: (viewMode) => {
+    set({ viewMode });
+    // Generate a first terrain lazily when entering surface mode.
+    if (viewMode === "surface" && !get().terrainMesh && !get().isGeneratingTerrain) {
+      get().generateTerrain();
+    }
+  },
 
-  deriveTerrainParams: () => {
-    const { steps, createParams } = get();
-    const detail = steps.find((s) => s.tool === "rockdetail");
-    const np = Number(detail?.params.normalPerturbation ?? 0.2);
-    const ne = Number(detail?.params.normalExponent ?? 0.5);
-    const depth = Number(detail?.params.depth ?? 4);
-    const bp = Number(detail?.params.basePerturbation ?? 0.1);
-    return {
-      scale: (3.0 + np * 4.0) * 256,
-      octaves: Math.min(depth, 6),
-      amplitude: Math.max(0.1, Math.min(1.0, np * 2.0)),
-      lacunarity: 1.8 + bp * 0.5,
-      persistence: 0.3 + ne * 0.3,
-      resolution: 256,
-    };
+  setSurfaceSeed: (surfaceSeed) => set({ surfaceSeed }),
+
+  setTerrainParam: (name, value) =>
+    set({ terrainParams: { ...get().terrainParams, [name]: value } }),
+
+  setTerrainParams: (partial) =>
+    set({ terrainParams: { ...get().terrainParams, ...partial } }),
+
+  randomizeSurfaceSeed: () => {
+    set({ surfaceSeed: Math.floor(Math.random() * 0xffffff) + 1 });
+    get().generateTerrain();
+  },
+
+  generateTerrain: () => {
+    if (!get().currentMeshObj) {
+      set({ error: "Generate an asteroid first, then switch to Surface mode." });
+      return;
+    }
+    set({ isGeneratingTerrain: true, error: null });
+    // Generate off the main thread in a Web Worker so the UI (and the spinner
+    // overlay) stays responsive during the heavy heightfield pass. A request
+    // token discards stale results if the user re-triggers before this finishes.
+    const { steps, createParams, terrainParams, surfaceSeed } = get();
+    const style = deriveTerrainStyle(steps, createParams);
+    const token = ++terrainReqToken;
+    generateTerrainAsync(style, terrainParams, surfaceSeed)
+      .then(({ mesh, scatter, meta }) => {
+        if (token !== terrainReqToken) return; // superseded by a newer request
+        set({
+          terrainMesh: mesh,
+          terrainScatter: scatter,
+          terrainMeta: meta,
+          terrainInfo: meshInfoFromMeshData(mesh),
+          isGeneratingTerrain: false,
+        });
+      })
+      .catch((e) => {
+        if (token !== terrainReqToken) return;
+        set({ isGeneratingTerrain: false, error: `Terrain generation failed: ${e}` });
+      });
+  },
+
+  addTerrainVariant: () => {
+    const { surfaceSeed, terrainVariants } = get();
+    if (!terrainVariants.includes(surfaceSeed)) {
+      set({ terrainVariants: [...terrainVariants, surfaceSeed] });
+    }
+  },
+
+  selectTerrainVariant: (seed) => {
+    set({ surfaceSeed: seed });
+    get().generateTerrain();
   },
 
   clearPipeline: () => set({ steps: [], error: null }),
@@ -1433,11 +1520,25 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         saveDisplaySettings({ background: updates.background! });
       }
     }
+    // Restore terrain settings + saved variants (clear cached terrain so it
+    // regenerates from the imported params on next Surface view).
+    if (config.terrain) {
+      updates.terrainParams = { ...DEFAULT_TERRAIN_PARAMS, ...config.terrain.params };
+      updates.surfaceSeed = config.terrain.surfaceSeed ?? 1;
+      // Normalize variants to bare seeds for the UI list (per-variant params,
+      // if any, are consumed by the CLI directly from the config JSON).
+      updates.terrainVariants = Array.isArray(config.terrain.variants)
+        ? config.terrain.variants.map((v) => (typeof v === "number" ? v : v.seed))
+        : [];
+      updates.terrainMesh = null;
+      updates.terrainScatter = null;
+      updates.terrainMeta = null;
+    }
     set(updates);
   },
 
   exportPipelineConfig: () => {
-    const { sourceType, baseMesh, createParams, steps, lights, background } = get();
+    const { sourceType, baseMesh, createParams, steps, lights, background, terrainParams, surfaceSeed, terrainVariants } = get();
     return {
       version: 1 as const,
       sourceType,
@@ -1447,6 +1548,11 @@ export const useStudioStore = create<StudioState>((set, get) => ({
       scene: {
         lights: lights.map((l) => ({ ...l })) as Array<Record<string, unknown>>,
         background: { ...background, hdriCustomUrl: undefined, hdriCustomName: undefined } as Record<string, unknown>,
+      },
+      terrain: {
+        params: { ...terrainParams },
+        surfaceSeed,
+        variants: [...terrainVariants],
       },
     };
   },

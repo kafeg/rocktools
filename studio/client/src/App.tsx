@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import Viewer3D from "./components/Viewer3D";
 import PipelineEditor from "./components/PipelineEditor";
+import TerrainPanel from "./components/TerrainPanel";
 import InfoPanel from "./components/InfoPanel";
 import ScenePanel from "./components/ScenePanel";
 import Journal from "./components/Journal";
@@ -12,17 +13,30 @@ import { useStudioStore, type FullPreset, type RandomMode } from "./stores/useSt
 import { useApi } from "./hooks/useApi";
 import { decodeShareUrl } from "./utils/export";
 
-type LeftTab = "pipeline" | "journal";
+type LeftTab = "pipeline" | "surface" | "journal";
 type RightTab = "info" | "scene" | "help";
 type MobilePanel = null | "pipeline" | "journal" | "info" | "scene" | "help";
 
 export default function App() {
   const isGenerating = useStudioStore((s) => s.isGenerating);
+  const isGeneratingTerrain = useStudioStore((s) => s.isGeneratingTerrain);
+  const viewMode = useStudioStore((s) => s.viewMode);
   const [leftTab, setLeftTab] = useState<LeftTab>("pipeline");
   const [rightTab, setRightTab] = useState<RightTab>("info");
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>(null);
   const { generate } = useApi();
   const initRef = useRef(false);
+
+  // Left tab and 3D view mode stay in sync: Pipeline ↔ asteroid, Surface ↔ terrain.
+  function selectLeftTab(tab: LeftTab) {
+    setLeftTab(tab);
+    if (tab === "pipeline") useStudioStore.getState().setViewMode("globe");
+    else if (tab === "surface") useStudioStore.getState().setViewMode("surface");
+  }
+  function selectViewMode(mode: "globe" | "surface") {
+    useStudioStore.getState().setViewMode(mode);
+    setLeftTab(mode === "surface" ? "surface" : "pipeline");
+  }
 
   useEffect(() => {
     if (initRef.current) return;
@@ -61,7 +75,7 @@ export default function App() {
       <div className="hidden md:flex w-80 shrink-0 border-r border-space-border flex-col overflow-hidden">
         <div className="flex border-b border-space-border">
           <button
-            onClick={() => setLeftTab("pipeline")}
+            onClick={() => selectLeftTab("pipeline")}
             className={`flex-1 py-2 text-xs uppercase tracking-wider transition-colors ${
               leftTab === "pipeline"
                 ? "text-space-accent border-b-2 border-space-accent"
@@ -71,7 +85,17 @@ export default function App() {
             Pipeline
           </button>
           <button
-            onClick={() => setLeftTab("journal")}
+            onClick={() => selectLeftTab("surface")}
+            className={`flex-1 py-2 text-xs uppercase tracking-wider transition-colors ${
+              leftTab === "surface"
+                ? "text-space-accent border-b-2 border-space-accent"
+                : "text-space-dim hover:text-space-text"
+            }`}
+          >
+            Surface
+          </button>
+          <button
+            onClick={() => selectLeftTab("journal")}
             className={`flex-1 py-2 text-xs uppercase tracking-wider transition-colors ${
               leftTab === "journal"
                 ? "text-space-accent border-b-2 border-space-accent"
@@ -83,7 +107,13 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-hidden">
-          {leftTab === "pipeline" ? <PipelineEditor /> : <Journal />}
+          {leftTab === "journal" ? (
+            <Journal />
+          ) : leftTab === "surface" ? (
+            <TerrainPanel />
+          ) : (
+            <PipelineEditor />
+          )}
         </div>
       </div>
 
@@ -92,10 +122,28 @@ export default function App() {
         <Viewer3D />
 
         {isGenerating && <GenerationOverlay />}
+        {isGeneratingTerrain && <GenerationOverlay terrain />}
 
         <div className="absolute top-3 left-4 pointer-events-none">
           <h1 className="text-lg font-bold tracking-wider text-space-text/80">ROCKTOOLS STUDIO</h1>
           <p className="text-[10px] tracking-widest text-space-dim">ASTEROID GENERATOR</p>
+        </div>
+
+        {/* Asteroid / Surface mode toggle */}
+        <div className="absolute top-12 md:top-3 left-1/2 -translate-x-1/2 z-10 flex rounded-md overflow-hidden border border-space-border bg-space-panel/80 backdrop-blur-sm">
+          {(["globe", "surface"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => selectViewMode(mode)}
+              className={`px-3 py-1 text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                viewMode === mode
+                  ? "bg-space-accent/20 text-space-accent"
+                  : "text-space-dim hover:text-space-text"
+              }`}
+            >
+              {mode === "globe" ? "Asteroid" : "Surface"}
+            </button>
+          ))}
         </div>
 
         {/* Display toolbar: top-right on mobile (below title), bottom-center on desktop */}
@@ -111,6 +159,10 @@ export default function App() {
             onGenerate={generate}
             onOpenPanel={setMobilePanel}
             isGenerating={isGenerating}
+            viewMode={viewMode}
+            onRandomSurface={() => useStudioStore.getState().randomizeSurfaceSeed()}
+            onGenerateTerrain={() => useStudioStore.getState().generateTerrain()}
+            isGeneratingTerrain={isGeneratingTerrain}
           />
         </div>
       </div>
@@ -171,7 +223,7 @@ export default function App() {
                         : "text-space-dim"
                     }`}
                   >
-                    Pipeline
+                    {viewMode === "surface" ? "Surface" : "Pipeline"}
                   </button>
                   <button
                     onClick={() => setMobilePanel("journal")}
@@ -226,7 +278,7 @@ export default function App() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto">
-              {mobilePanel === "pipeline" && <PipelineEditor />}
+              {mobilePanel === "pipeline" && (viewMode === "surface" ? <TerrainPanel /> : <PipelineEditor />)}
               {mobilePanel === "journal" && <Journal />}
               {mobilePanel === "info" && <InfoPanel />}
               {mobilePanel === "scene" && <ScenePanel />}

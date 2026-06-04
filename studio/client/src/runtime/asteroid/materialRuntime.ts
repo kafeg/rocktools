@@ -53,6 +53,8 @@ export interface AsteroidShaderUniforms {
   uSunDirectionWorld: { value: THREE.Vector3 };
   uMaterialDirectionObject: { value: THREE.Vector3 };
   uObjectToViewNormalMatrix: { value: THREE.Matrix3 };
+  /** 1.0 = flat terrain (slope from normal.y), 0.0 = asteroid (radial slope). */
+  uTerrainFlatMode: { value: number };
 }
 
 export type AsteroidTextureUrlResolver = (textureId: string, kind: AsteroidTextureKind) => string;
@@ -150,19 +152,23 @@ varying vec3 vWorldNormal;
 varying float vSlope;
 varying vec4 vFeature;
 varying vec4 vFeature2;
+uniform float uTerrainFlatMode;
 `;
 
 const VERTEX_MAIN = /* glsl */ `
 vObjPosition = position;
 vObjNormal = normal;
 vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
-vec3 outward = normalize(position);
+// Flat terrain: "outward" is world-up so slope/cavity terms read correctly on a
+// plane. Asteroid: radial direction from the body centre.
+vec3 outward = (uTerrainFlatMode > 0.5) ? vec3(0.0, 1.0, 0.0) : normalize(position);
 vSlope = dot(normalize(normal), outward);
 vFeature = featureData;
 vFeature2 = featureData2;
 `;
 
 const FRAG_UNIFORMS = /* glsl */ `
+uniform float uTerrainFlatMode;
 uniform vec3 uBaseColor;
 uniform float uColorVariation;
 uniform float uColorVariationScale;
@@ -303,6 +309,10 @@ if (uFrostAmount > 0.01) {
   float fExposure = 1.0 - clamp(dot(vObjNormal, normalize(uMaterialDirectionObject)), 0.0, 1.0);
   float frostRough = mix(fExposure, fConcavity, uFrostBias) * uFrostAmount;
   roughnessFactor = mix(roughnessFactor, 0.12, clamp(frostRough, 0.0, 1.0));
+}
+if (uTerrainFlatMode > 0.5) {
+  float steep = 1.0 - smoothstep(0.55, 0.92, vSlope);
+  roughnessFactor = clamp(roughnessFactor + steep * 0.15, 0.05, 1.0);
 }
 `;
 
@@ -494,6 +504,16 @@ const FRAG_COLOR = /* glsl */ `
     finalColor *= ao;
   }
 
+  // Terrain slope splat: steep faces read as exposed (darker, cooler) rock,
+  // flats keep the dusty base. Large-scale tonal noise breaks up uniformity.
+  if (uTerrainFlatMode > 0.5) {
+    float steep = 1.0 - smoothstep(0.55, 0.92, vSlope); // 0 = flat, 1 = vertical
+    finalColor *= mix(1.0, 0.55, steep);
+    finalColor = mix(finalColor, finalColor * vec3(0.9, 0.93, 1.0), steep * 0.5);
+    float tone = snoise(vObjPosition * 1.5) * 0.07;
+    finalColor *= (1.0 + tone);
+  }
+
   diffuseColor.rgb = finalColor;
 `;
 
@@ -607,6 +627,7 @@ export function createAsteroidShaderUniforms(): AsteroidShaderUniforms {
     uSunDirectionWorld: { value: new THREE.Vector3(1, 0, 0) },
     uMaterialDirectionObject: { value: new THREE.Vector3(1, 0.3, 0.2).normalize() },
     uObjectToViewNormalMatrix: { value: new THREE.Matrix3() },
+    uTerrainFlatMode: { value: 0 },
   };
 }
 

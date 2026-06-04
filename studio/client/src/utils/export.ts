@@ -2,10 +2,14 @@ import * as THREE from "three";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
 import type { CollectedShaderParams } from "../stores/useStudioStore";
 import type { MeshData } from "./meshModifiers";
+import { makeNoise2D, type TerrainScatter, type TerrainMeta, type TerrainParams } from "./terrain";
 
 // ── MeshData → BufferGeometry (shared with Viewer3D) ────────────────
 
-export function meshDataToGeometry(mesh: MeshData): THREE.BufferGeometry {
+export function meshDataToGeometry(
+  mesh: MeshData,
+  opts?: { center?: boolean },
+): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   const posArr = new Float32Array(mesh.vertexCount * 3);
   const normArr = new Float32Array(mesh.vertexCount * 3);
@@ -15,14 +19,18 @@ export function meshDataToGeometry(mesh: MeshData): THREE.BufferGeometry {
   }
   geometry.setAttribute("position", new THREE.BufferAttribute(posArr, 3));
   geometry.setAttribute("normal", new THREE.BufferAttribute(normArr, 3));
-  geometry.setIndex(Array.from(mesh.indices));
+  // Use the typed array directly — Array.from() on a multi-million-element
+  // terrain index buffer is needless GC pressure.
+  geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
 
   const fd = mesh.featureData ?? new Float32Array(mesh.vertexCount * 4);
   geometry.setAttribute("featureData", new THREE.BufferAttribute(fd, 4));
   const fd2 = mesh.featureData2 ?? new Float32Array(mesh.vertexCount * 4);
   geometry.setAttribute("featureData2", new THREE.BufferAttribute(fd2, 4));
 
-  geometry.center();
+  // Terrain passes center:false so scattered rock instances (which live in the
+  // same un-centered coordinate frame) stay aligned with the heightfield.
+  if (opts?.center !== false) geometry.center();
   geometry.computeBoundingSphere();
   return geometry;
 }
@@ -580,6 +588,212 @@ export async function exportGLB(
   );
 }
 
+// ── Terrain export (heightfield + scattered rocks) ──────────────────
+
+/** Planar UVs from the XZ bounding box — natural for a heightfield tile. */
+function generatePlanarUVs(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox!;
+  const pos = geo.getAttribute("position");
+  const sx = bb.max.x - bb.min.x || 1;
+  const sz = bb.max.z - bb.min.z || 1;
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    uv[i * 2] = (pos.getX(i) - bb.min.x) / sx;
+    uv[i * 2 + 1] = (pos.getZ(i) - bb.min.z) / sz;
+  }
+  geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  return geo;
+}
+
+/** Bake all rock instances into one merged BufferGeometry (for GLB export). */
+function mergeScatterToGeometry(scatter: TerrainScatter): THREE.BufferGeometry | null {
+  if (scatter.instances.length === 0) return null;
+  let totalVerts = 0;
+  let totalIdx = 0;
+  for (const inst of scatter.instances) {
+    const t = scatter.templates[inst.templateIdx]!;
+    totalVerts += t.vertexCount;
+    totalIdx += t.indices.length;
+  }
+  const positions = new Float32Array(totalVerts * 3);
+  const normals = new Float32Array(totalVerts * 3);
+  const indices = new Uint32Array(totalIdx);
+
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const qAlign = new THREE.Quaternion();
+  const qYaw = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0);
+  const nAxis = new THREE.Vector3();
+  const v = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+  let vOff = 0;
+  let iOff = 0;
+  for (const inst of scatter.instances) {
+    const t = scatter.templates[inst.templateIdx]!;
+    nAxis.set(inst.nx, inst.ny, inst.nz);
+    qAlign.setFromUnitVectors(up, nAxis);
+    qYaw.setFromAxisAngle(nAxis, inst.rotY);
+    q.copy(qYaw).multiply(qAlign);
+    m.compose(new THREE.Vector3(inst.x, inst.y, inst.z), q, new THREE.Vector3(inst.scale, inst.scale, inst.scale));
+    for (let i = 0; i < t.vertexCount; i++) {
+      v.set(t.positions[i * 3]!, t.positions[i * 3 + 1]!, t.positions[i * 3 + 2]!).applyMatrix4(m);
+      positions[(vOff + i) * 3] = v.x;
+      positions[(vOff + i) * 3 + 1] = v.y;
+      positions[(vOff + i) * 3 + 2] = v.z;
+      nrm.set(t.normals[i * 3]!, t.normals[i * 3 + 1]!, t.normals[i * 3 + 2]!).applyQuaternion(q);
+      normals[(vOff + i) * 3] = nrm.x;
+      normals[(vOff + i) * 3 + 1] = nrm.y;
+      normals[(vOff + i) * 3 + 2] = nrm.z;
+    }
+    for (let i = 0; i < t.indices.length; i++) indices[iOff + i] = t.indices[i]! + vOff;
+    vOff += t.vertexCount;
+    iOff += t.indices.length;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  return geo;
+}
+
+/**
+ * Per-vertex colour for exported rocks: the style base colour, broken up by the
+ * same colour-variation noise the asteroid material uses, with dust settling on
+ * up-facing surfaces. Keeps GLB rocks stylistically tied to the asteroid
+ * without needing a UV atlas / texture bake.
+ */
+function applyRockVertexColors(geo: THREE.BufferGeometry, params: CollectedShaderParams): void {
+  const pos = geo.getAttribute("position");
+  const nor = geo.getAttribute("normal");
+  const base = new THREE.Color(params.baseColor);
+  const dust = new THREE.Color(params.dustColor);
+  const noise = makeNoise2D(0x2f1e9b);
+  const vScale = params.colorVariationScale || 2.5;
+  const vAmt = params.colorVariation || 0;
+  const dustAmt = params.dustAmount || 0;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    c.copy(base);
+    const n = noise(pos.getX(i) * vScale, pos.getZ(i) * vScale); // ~[-1,1]
+    c.multiplyScalar(1 + n * 0.18 * vAmt);
+    const up = Math.max(0, nor.getY(i));
+    c.lerp(dust, Math.min(0.6, up * dustAmt));
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+}
+
+export async function exportTerrainGLBToBuffer(
+  terrain: MeshData,
+  scatter: TerrainScatter | null,
+  shaderParams: CollectedShaderParams,
+  resolution: number = 1024,
+  meta?: TerrainMeta | null,
+): Promise<ArrayBuffer> {
+  const group = new THREE.Group();
+  group.name = "terrain_patch";
+
+  // Gameplay metadata → glTF `extras` (GLTFExporter writes userData to extras;
+  // GLTFLoader reads it back into userData). The game can read flat landing
+  // pads, slope stats, seeds, etc. without re-deriving anything.
+  if (meta) {
+    group.userData.rocktoolsTerrain = meta;
+    // Plus named empty nodes at each landing pad for engines that prefer scene
+    // markers over parsing extras.
+    meta.landingPads.forEach((pad, i) => {
+      const marker = new THREE.Object3D();
+      marker.name = `landing_${i}`;
+      marker.position.set(pad.x, pad.y, pad.z);
+      marker.userData = { radius: pad.radius, slope: pad.slope };
+      group.add(marker);
+    });
+  }
+
+  // Terrain heightfield — bake the asteroid material to an albedo texture.
+  let terrainGeo = meshDataToGeometry(terrain, { center: false });
+  terrainGeo = generatePlanarUVs(terrainGeo);
+  const albedo = await bakeAlbedoTexture(terrainGeo, shaderParams, resolution);
+  terrainGeo.deleteAttribute("featureData");
+  terrainGeo.deleteAttribute("featureData2");
+  const terrainMat = new THREE.MeshStandardMaterial({
+    map: albedo,
+    roughness: shaderParams.roughness,
+    metalness: shaderParams.metalness,
+  });
+  const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+  terrainMesh.name = "terrain";
+  group.add(terrainMesh);
+
+  // Scattered rocks — merged geometry with a simple material.
+  const rockGeo = scatter ? mergeScatterToGeometry(scatter) : null;
+  let rockMat: THREE.MeshStandardMaterial | null = null;
+  if (rockGeo) {
+    applyRockVertexColors(rockGeo, shaderParams);
+    rockMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: shaderParams.roughness,
+      metalness: shaderParams.metalness,
+      flatShading: true,
+    });
+    const rocks = new THREE.Mesh(rockGeo, rockMat);
+    rocks.name = "rocks";
+    group.add(rocks);
+  }
+
+  const exporter = new GLTFExporter();
+  const glb = (await exporter.parseAsync(group, { binary: true })) as ArrayBuffer;
+
+  albedo.dispose();
+  terrainMat.dispose();
+  terrainGeo.dispose();
+  rockGeo?.dispose();
+  rockMat?.dispose();
+
+  return glb;
+}
+
+export async function exportTerrainGLB(
+  terrain: MeshData,
+  scatter: TerrainScatter | null,
+  shaderParams: CollectedShaderParams,
+  resolution: number = 1024,
+  surfaceSeed?: number,
+  meta?: TerrainMeta | null,
+): Promise<void> {
+  const glb = await exportTerrainGLBToBuffer(terrain, scatter, shaderParams, resolution, meta);
+  downloadBlob(
+    new Blob([glb], { type: "model/gltf-binary" }),
+    `terrain_${surfaceSeed ?? "x"}_${Date.now()}.glb`,
+  );
+}
+
+/** One terrain variant: a seed, optionally with its own param overrides. */
+export interface TerrainVariant {
+  seed: number;
+  /** Per-variant overrides merged over the base terrain params (optional). */
+  params?: Partial<TerrainParams>;
+}
+
+/** Surface-terrain settings persisted alongside the asteroid pipeline. */
+export interface TerrainConfig {
+  params: TerrainParams;
+  /** Currently-selected variant seed. */
+  surfaceSeed: number;
+  /**
+   * Saved variants. Either bare seeds (UI "save current" list) or
+   * {seed, params} objects (batch generation with per-variant detail, e.g. one
+   * terrain per landing site). The CLI honours per-variant params in a single
+   * session without regenerating the asteroid.
+   */
+  variants: Array<number | TerrainVariant>;
+}
+
 export interface PipelineConfig {
   version: 1;
   sourceType: string;
@@ -590,6 +804,8 @@ export interface PipelineConfig {
     lights: Array<Record<string, unknown>>;
     background: Record<string, unknown>;
   };
+  /** Surface terrain generation settings + saved variants. */
+  terrain?: TerrainConfig;
 }
 
 export function exportPipelineParams(config: PipelineConfig): void {
@@ -615,6 +831,7 @@ export function parsePipelineConfig(json: string): PipelineConfig | null {
         ...(s.enabled === false ? { enabled: false } : {}),
       })),
       ...(data.scene ? { scene: data.scene } : {}),
+      ...(data.terrain ? { terrain: data.terrain as TerrainConfig } : {}),
     };
   } catch {
     return null;

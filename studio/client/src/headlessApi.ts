@@ -7,8 +7,19 @@
 import * as THREE from "three";
 import { useStudioStore } from "./stores/useStudioStore";
 import { runRocktool, isWasmAvailable } from "./wasm/rockcreateWasm";
-import { exportGLBToBuffer, exportRuntimeGLBToBuffer } from "./utils/export";
+import { exportGLBToBuffer, exportRuntimeGLBToBuffer, exportTerrainGLBToBuffer } from "./utils/export";
 import { normalizeObj } from "./utils/meshParsing";
+import { deriveTerrainStyle, generateTerrain as runGenerateTerrain } from "./utils/terrain";
+
+function glbToBase64(glb: ArrayBuffer): string {
+  const bytes = new Uint8Array(glb);
+  let binary = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
 
 async function generate(): Promise<void> {
   const state = useStudioStore.getState();
@@ -70,6 +81,41 @@ async function exportGLB(resolution: number = 1024): Promise<string> {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+/**
+ * Generate a terrain patch from the current asteroid + a surfaceSeed and export
+ * it as a base64 GLB. Deterministic and synchronous (no store timers) so it can
+ * be driven headlessly to mass-produce terrain variants for the game.
+ */
+/**
+ * Stateless per-call params: the optional `paramsOverride` is merged over the
+ * base terrain params WITHOUT mutating store state, so batching variants with
+ * different params (e.g. per landing site) can't leak settings between calls.
+ */
+async function exportTerrainGLB(
+  surfaceSeed: number,
+  resolution: number = 1024,
+  paramsOverride?: Record<string, number>,
+): Promise<string> {
+  const state = useStudioStore.getState();
+  if (!state.currentMeshObj) throw new Error("No asteroid — call generate() first");
+  const style = deriveTerrainStyle(state.steps, state.createParams);
+  const params = { ...state.terrainParams, ...(paramsOverride ?? {}) };
+  const { mesh, scatter, meta } = runGenerateTerrain(style, params, surfaceSeed);
+  const shaderParams = state.collectShaderParams();
+  const glb = await exportTerrainGLBToBuffer(mesh, scatter, shaderParams, resolution, meta);
+  return glbToBase64(glb);
+}
+
+/** Terrain metadata (landing pads, slope stats) as JSON — for CLI sidecar files. */
+function getTerrainMeta(surfaceSeed: number, paramsOverride?: Record<string, number>): string {
+  const state = useStudioStore.getState();
+  if (!state.currentMeshObj) throw new Error("No asteroid — call generate() first");
+  const style = deriveTerrainStyle(state.steps, state.createParams);
+  const params = { ...state.terrainParams, ...(paramsOverride ?? {}) };
+  const { meta } = runGenerateTerrain(style, params, surfaceSeed);
+  return JSON.stringify(meta);
 }
 
 async function exportRuntimeGLB(): Promise<string> {
@@ -184,8 +230,14 @@ export function installHeadlessApi() {
   (window as any).__rocktools = {
     store: useStudioStore,
 
-    importConfig(config: { sourceType: string; baseMesh: string; createParams: Record<string, any>; steps: Array<{ tool: string; params: Record<string, any>; enabled?: boolean }> }) {
+    importConfig(config: { sourceType: string; baseMesh: string; createParams: Record<string, any>; steps: Array<{ tool: string; params: Record<string, any>; enabled?: boolean }>; terrain?: { params: any; surfaceSeed: number; variants: Array<number | { seed: number; params?: any }> } }) {
       useStudioStore.getState().importPipelineConfig(config);
+    },
+
+    /** Override terrain params before exportTerrainGLB — lets the CLI vary
+     *  detail per variant (e.g. per landing site) within one session. */
+    setTerrainParams(partial: Record<string, number>) {
+      useStudioStore.getState().setTerrainParams(partial);
     },
 
     generate,
@@ -196,6 +248,14 @@ export function installHeadlessApi() {
 
     async exportRuntimeGLB(): Promise<string> {
       return exportRuntimeGLB();
+    },
+
+    async exportTerrainGLB(surfaceSeed: number = 1, resolution: number = 1024, paramsOverride?: Record<string, number>): Promise<string> {
+      return exportTerrainGLB(surfaceSeed, resolution, paramsOverride);
+    },
+
+    getTerrainMeta(surfaceSeed: number = 1, paramsOverride?: Record<string, number>): string {
+      return getTerrainMeta(surfaceSeed, paramsOverride);
     },
 
     async exportImage(

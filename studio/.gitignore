@@ -4,3 +4,4 @@ server/dist/
 client/dist/
 *.log
 .env
+*.tsbuildinfo

@@ -197,7 +197,7 @@ function laplacianSmooth(mesh: MeshData, passes: number): MeshData {
  * Generate a single rock template mesh.
  * Pipeline: icosahedron → radial perturb → N× (subdivide + perturb) → smooth
  */
-function generateRockTemplate(seed: number, roughness: number, detail: number): MeshData {
+export function generateRockTemplate(seed: number, roughness: number, detail: number): MeshData {
   const rand = mulberry32(seed);
 
   let rock = createIcosahedron();

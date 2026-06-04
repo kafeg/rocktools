@@ -8,24 +8,54 @@ interface MobileBarProps {
   onGenerate: () => void;
   onOpenPanel: (panel: "pipeline" | "journal" | "info" | "scene") => void;
   isGenerating: boolean;
+  viewMode: "globe" | "surface";
+  onRandomSurface: () => void;
+  onGenerateTerrain: () => void;
+  isGeneratingTerrain: boolean;
 }
 
-export default function MobileBar({ onPreset, onRandom, onGenerate, onOpenPanel, isGenerating }: MobileBarProps) {
+export default function MobileBar({
+  onPreset, onRandom, onGenerate, onOpenPanel, isGenerating,
+  viewMode, onRandomSurface, onGenerateTerrain, isGeneratingTerrain,
+}: MobileBarProps) {
   return (
     <div className="bg-space-panel/95 backdrop-blur-md border-t border-space-border pb-[env(safe-area-inset-bottom)]">
       {/* Action row */}
       <div className="flex gap-2 px-3 py-3">
-        <RandomMenu
-          onRandomize={onRandom}
-          disabled={isGenerating}
-          variant="mobile"
-        />
-        <GenerateMenu
-          onGenerate={onGenerate}
-          onPreset={(preset) => { onPreset(preset); onGenerate(); }}
-          disabled={isGenerating}
-          variant="mobile"
-        />
+        {viewMode === "surface" ? (
+          <>
+            <button
+              onClick={onRandomSurface}
+              disabled={isGeneratingTerrain}
+              className="flex-1 py-3 rounded-xl text-sm font-medium transition-all
+                         bg-space-border/30 text-space-text active:bg-space-border/50 disabled:opacity-50"
+            >
+              🎲 Variant
+            </button>
+            <button
+              onClick={onGenerateTerrain}
+              disabled={isGeneratingTerrain}
+              className="flex-1 py-3 rounded-xl text-sm font-medium transition-all
+                         bg-space-accent/20 text-space-accent active:bg-space-accent/30 disabled:opacity-50"
+            >
+              {isGeneratingTerrain ? "Generating…" : "Generate"}
+            </button>
+          </>
+        ) : (
+          <>
+            <RandomMenu
+              onRandomize={onRandom}
+              disabled={isGenerating}
+              variant="mobile"
+            />
+            <GenerateMenu
+              onGenerate={onGenerate}
+              onPreset={(preset) => { onPreset(preset); onGenerate(); }}
+              disabled={isGenerating}
+              variant="mobile"
+            />
+          </>
+        )}
         <button
           onClick={() => onOpenPanel("pipeline")}
           className="w-12 py-3 rounded-xl text-sm transition-all flex items-center justify-center

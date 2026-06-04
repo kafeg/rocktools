@@ -196,7 +196,19 @@ export interface MeshValidationResult {
   stats?: { nanCount: number; infCount: number; degenerateTriCount: number; maxExtent: number };
 }
 
-export function validateMesh(mesh: MeshData): MeshValidationResult {
+export interface MeshValidationOptions {
+  /**
+   * Open-surface mode for terrain / heightfields. Skips the closed-manifold
+   * boundary-edge check and the signed-volume "self-intersection" heuristic —
+   * both assume a closed solid and false-positive on an open plate or on a
+   * surface with scattered (half-embedded) rock instances. NaN/Inf, torn-aspect
+   * and degenerate-triangle checks still apply.
+   */
+  open?: boolean;
+}
+
+export function validateMesh(mesh: MeshData, options?: MeshValidationOptions): MeshValidationResult {
+  const open = options?.open ?? false;
   let nanCount = 0;
   let infCount = 0;
   for (let i = 0; i < mesh.vertexCount * 3; i++) {
@@ -233,63 +245,68 @@ export function validateMesh(mesh: MeshData): MeshValidationResult {
     };
   }
 
-  const edgeCounts = new Map<number, number>();
-  const vc = mesh.vertexCount;
-  for (let i = 0; i < mesh.triCount; i++) {
-    const a = mesh.indices[i * 3]!;
-    const b = mesh.indices[i * 3 + 1]!;
-    const c = mesh.indices[i * 3 + 2]!;
-    const e0 = a < b ? a * vc + b : b * vc + a;
-    const e1 = b < c ? b * vc + c : c * vc + b;
-    const e2 = a < c ? a * vc + c : c * vc + a;
-    edgeCounts.set(e0, (edgeCounts.get(e0) ?? 0) + 1);
-    edgeCounts.set(e1, (edgeCounts.get(e1) ?? 0) + 1);
-    edgeCounts.set(e2, (edgeCounts.get(e2) ?? 0) + 1);
-  }
-  let boundaryEdges = 0;
-  for (const count of edgeCounts.values()) {
-    if (count === 1) boundaryEdges++;
-  }
-  const totalEdges = edgeCounts.size;
-  const boundaryRatio = totalEdges > 0 ? boundaryEdges / totalEdges : 0;
-  if (boundaryRatio > 0.08) {
-    return {
-      valid: false,
-      error: `Mesh is not closed: ${boundaryEdges} open edges (${Math.round(boundaryRatio * 100)}% boundary). Try different parameters.`,
-      stats: { nanCount: 0, infCount: 0, degenerateTriCount: 0, maxExtent },
-    };
-  }
+  // The following two checks assume a CLOSED solid (asteroid). They are invalid
+  // for an open terrain plate (which is all boundary, zero signed volume) and
+  // for surfaces with half-embedded rock instances — so skip them when `open`.
+  if (!open) {
+    const edgeCounts = new Map<number, number>();
+    const vc = mesh.vertexCount;
+    for (let i = 0; i < mesh.triCount; i++) {
+      const a = mesh.indices[i * 3]!;
+      const b = mesh.indices[i * 3 + 1]!;
+      const c = mesh.indices[i * 3 + 2]!;
+      const e0 = a < b ? a * vc + b : b * vc + a;
+      const e1 = b < c ? b * vc + c : c * vc + b;
+      const e2 = a < c ? a * vc + c : c * vc + a;
+      edgeCounts.set(e0, (edgeCounts.get(e0) ?? 0) + 1);
+      edgeCounts.set(e1, (edgeCounts.get(e1) ?? 0) + 1);
+      edgeCounts.set(e2, (edgeCounts.get(e2) ?? 0) + 1);
+    }
+    let boundaryEdges = 0;
+    for (const count of edgeCounts.values()) {
+      if (count === 1) boundaryEdges++;
+    }
+    const totalEdges = edgeCounts.size;
+    const boundaryRatio = totalEdges > 0 ? boundaryEdges / totalEdges : 0;
+    if (boundaryRatio > 0.08) {
+      return {
+        valid: false,
+        error: `Mesh is not closed: ${boundaryEdges} open edges (${Math.round(boundaryRatio * 100)}% boundary). Try different parameters.`,
+        stats: { nanCount: 0, infCount: 0, degenerateTriCount: 0, maxExtent },
+      };
+    }
 
-  // Volume consistency: detect self-intersecting / crumpled meshes
-  // Compare signed volume (from centroid) to total absolute volume
-  let centX = 0, centY = 0, centZ = 0;
-  for (let i = 0; i < mesh.vertexCount; i++) {
-    centX += mesh.positions[i * 3]!;
-    centY += mesh.positions[i * 3 + 1]!;
-    centZ += mesh.positions[i * 3 + 2]!;
-  }
-  centX /= mesh.vertexCount;
-  centY /= mesh.vertexCount;
-  centZ /= mesh.vertexCount;
+    // Volume consistency: detect self-intersecting / crumpled meshes
+    // Compare signed volume (from centroid) to total absolute volume
+    let centX = 0, centY = 0, centZ = 0;
+    for (let i = 0; i < mesh.vertexCount; i++) {
+      centX += mesh.positions[i * 3]!;
+      centY += mesh.positions[i * 3 + 1]!;
+      centZ += mesh.positions[i * 3 + 2]!;
+    }
+    centX /= mesh.vertexCount;
+    centY /= mesh.vertexCount;
+    centZ /= mesh.vertexCount;
 
-  let signedVol = 0;
-  let absVol = 0;
-  for (let i = 0; i < mesh.triCount; i++) {
-    const i0 = mesh.indices[i * 3]!, i1 = mesh.indices[i * 3 + 1]!, i2 = mesh.indices[i * 3 + 2]!;
-    const ax = mesh.positions[i0 * 3]! - centX, ay = mesh.positions[i0 * 3 + 1]! - centY, az = mesh.positions[i0 * 3 + 2]! - centZ;
-    const bx = mesh.positions[i1 * 3]! - centX, by = mesh.positions[i1 * 3 + 1]! - centY, bz = mesh.positions[i1 * 3 + 2]! - centZ;
-    const cx = mesh.positions[i2 * 3]! - centX, cy = mesh.positions[i2 * 3 + 1]! - centY, cz = mesh.positions[i2 * 3 + 2]! - centZ;
-    const det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
-    signedVol += det;
-    absVol += Math.abs(det);
-  }
-  const volRatio = absVol > 0 ? Math.abs(signedVol) / absVol : 1;
-  if (volRatio < 0.25) {
-    return {
-      valid: false,
-      error: `Mesh appears self-intersecting (volume consistency ${Math.round(volRatio * 100)}%). Try different parameters.`,
-      stats: { nanCount: 0, infCount: 0, degenerateTriCount: 0, maxExtent },
-    };
+    let signedVol = 0;
+    let absVol = 0;
+    for (let i = 0; i < mesh.triCount; i++) {
+      const i0 = mesh.indices[i * 3]!, i1 = mesh.indices[i * 3 + 1]!, i2 = mesh.indices[i * 3 + 2]!;
+      const ax = mesh.positions[i0 * 3]! - centX, ay = mesh.positions[i0 * 3 + 1]! - centY, az = mesh.positions[i0 * 3 + 2]! - centZ;
+      const bx = mesh.positions[i1 * 3]! - centX, by = mesh.positions[i1 * 3 + 1]! - centY, bz = mesh.positions[i1 * 3 + 2]! - centZ;
+      const cx = mesh.positions[i2 * 3]! - centX, cy = mesh.positions[i2 * 3 + 1]! - centY, cz = mesh.positions[i2 * 3 + 2]! - centZ;
+      const det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+      signedVol += det;
+      absVol += Math.abs(det);
+    }
+    const volRatio = absVol > 0 ? Math.abs(signedVol) / absVol : 1;
+    if (volRatio < 0.25) {
+      return {
+        valid: false,
+        error: `Mesh appears self-intersecting (volume consistency ${Math.round(volRatio * 100)}%). Try different parameters.`,
+        stats: { nanCount: 0, infCount: 0, degenerateTriCount: 0, maxExtent },
+      };
+    }
   }
 
   let degenerateTriCount = 0;

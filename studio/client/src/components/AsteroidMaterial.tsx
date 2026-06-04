@@ -14,7 +14,7 @@ import { useStudioStore } from "../stores/useStudioStore";
 
 const studioTextureResolver = createAsteroidTextureUrlResolver(`${import.meta.env.BASE_URL}textures/`);
 
-export default function AsteroidMaterial({ wireframe }: { wireframe: boolean }) {
+export default function AsteroidMaterial({ wireframe, flatMode = false }: { wireframe: boolean; flatMode?: boolean }) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
   const textureRef = useRef<{ id: string; set: AsteroidTextureSet }>({
     id: "none",
@@ -40,6 +40,7 @@ export default function AsteroidMaterial({ wireframe }: { wireframe: boolean }) 
     }
 
     applyAsteroidMaterialParams(mat, uniforms, params, { textureSet: textureRef.current.set });
+    uniforms.uTerrainFlatMode.value = flatMode ? 1 : 0;
   });
 
   const params = useStudioStore.getState().collectShaderParams();
@@ -51,7 +52,7 @@ export default function AsteroidMaterial({ wireframe }: { wireframe: boolean }) 
       roughness={params.roughness}
       metalness={params.metalness}
       wireframe={wireframe}
-      flatShading={!wireframe}
+      flatShading={!wireframe && !flatMode}
       onBeforeCompile={(shader) => {
         patchAsteroidMaterialShader(shader, uniforms);
         if (materialRef.current) {

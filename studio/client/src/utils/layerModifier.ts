@@ -24,9 +24,32 @@ const DEFAULTS: LayerParams = {
   seed: 1,
 };
 
-function noise3d(x: number, y: number, z: number, seed: number): number {
-  const n = Math.sin(x * 12.9898 + y * 78.233 + z * 45.164 + seed * 93.1) * 43758.5453;
+// Integer-lattice hash → [0,1). Only sampled at integer corners, so the
+// trilinear interpolation below makes the field spatially SMOOTH (the old code
+// hashed the raw coords, i.e. white noise, which made neighbouring vertices
+// land in different layer bands and produced vertical spikes).
+function hash3(ix: number, iy: number, iz: number, seed: number): number {
+  const n = Math.sin(ix * 12.9898 + iy * 78.233 + iz * 45.164 + seed * 93.1) * 43758.5453;
   return n - Math.floor(n);
+}
+
+function smooth(t: number): number {
+  return t * t * (3 - 2 * t);
+}
+
+/** Smooth trilinear value noise in [-1, 1]. */
+function valueNoise3d(x: number, y: number, z: number, seed: number): number {
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+  const fx = x - ix, fy = y - iy, fz = z - iz;
+  const ux = smooth(fx), uy = smooth(fy), uz = smooth(fz);
+  const c = (dx: number, dy: number, dz: number) => hash3(ix + dx, iy + dy, iz + dz, seed);
+  const x00 = c(0, 0, 0) + (c(1, 0, 0) - c(0, 0, 0)) * ux;
+  const x10 = c(0, 1, 0) + (c(1, 1, 0) - c(0, 1, 0)) * ux;
+  const x01 = c(0, 0, 1) + (c(1, 0, 1) - c(0, 0, 1)) * ux;
+  const x11 = c(0, 1, 1) + (c(1, 1, 1) - c(0, 1, 1)) * ux;
+  const y0 = x00 + (x10 - x00) * uy;
+  const y1 = x01 + (x11 - x01) * uy;
+  return ((y0 + (y1 - y0) * uz) * 2 - 1);
 }
 
 function fbm3d(x: number, y: number, z: number, seed: number, octaves: number): number {
@@ -35,12 +58,12 @@ function fbm3d(x: number, y: number, z: number, seed: number, octaves: number): 
   let freq = 1;
   let totalAmp = 0;
   for (let i = 0; i < octaves; i++) {
-    val += amp * (noise3d(x * freq, y * freq, z * freq, seed + i * 7.3) * 2 - 1);
+    val += amp * valueNoise3d(x * freq, y * freq, z * freq, seed + i * 7.3);
     totalAmp += amp;
     amp *= 0.5;
     freq *= 2.1;
   }
-  return val / totalAmp;
+  return totalAmp > 0 ? val / totalAmp : 0;
 }
 
 export const layerModifier: MeshModifier = {
@@ -62,11 +85,14 @@ export const layerModifier: MeshModifier = {
     const occupancy = ensureOccupancy(mesh);
     const featureData = ensureFeatureData(mesh);
 
-    const layerDisplacements: number[] = [];
-    for (let i = 0; i < p.layers; i++) {
-      const sign = (i % 2 === 0) ? -1 : 1;
-      layerDisplacements.push(sign * dispMag * (0.5 + rand() * 0.5));
-    }
+    const layers = Math.max(2, Math.round(p.layers));
+    // Per-seed phase offset so different seeds get different band positions.
+    const phaseOffset = rand();
+    // Sharpness pushes the smooth sine toward flatter plateaus with rounded
+    // steps, but the displacement ALWAYS stays continuous across band borders
+    // (a continuous function of radius), so no opposite-sign neighbours / spikes.
+    const k = 1 + p.sharpness * 6;
+    const tanhK = Math.tanh(k);
 
     const newPositions = new Float64Array(mesh.positions);
 
@@ -83,22 +109,12 @@ export const layerModifier: MeshModifier = {
         : 0;
       const perturbedR = r + noiseVal * p.noise * meshRadius * 0.1;
 
-      const layerFloat = (perturbedR / meshRadius) * p.layers;
-      const layerIdx = Math.floor(layerFloat) % p.layers;
-      const layerFrac = layerFloat - Math.floor(layerFloat);
-
-      let blendFactor: number;
-      if (p.sharpness >= 0.99) {
-        blendFactor = 1.0;
-      } else {
-        const edgeDist = Math.min(layerFrac, 1.0 - layerFrac);
-        const transWidth = 0.5 * (1.0 - p.sharpness);
-        blendFactor = edgeDist < transWidth
-          ? edgeDist / transWidth
-          : 1.0;
-      }
-
-      const displacement = layerDisplacements[layerIdx % layerDisplacements.length]! * blendFactor;
+      // Continuous terrace wave along radius. sin → C∞; tanh shaping keeps it
+      // continuous while sharpening the steps. Neighbours always get close
+      // values, so the mesh stays smooth.
+      const phase = (perturbedR / meshRadius) * layers + phaseOffset;
+      const s = Math.tanh(Math.sin(phase * Math.PI) * k) / tanhK; // [-1, 1]
+      const displacement = s * dispMag;
 
       if (Math.abs(displacement) > 1e-10) {
         const nx = mesh.normals[vi * 3]!;
@@ -109,9 +125,9 @@ export const layerModifier: MeshModifier = {
         newPositions[vi * 3 + 2] += nz * displacement;
 
         occupancy[vi] = Math.max(occupancy[vi]!, Math.abs(displacement));
-        const edgeDist = Math.min(layerFrac, 1.0 - layerFrac);
+        // Layer-edge highlight (for shader banding) peaks where s≈0 (band border).
         const fi = vi * 4;
-        featureData[fi + 3] = Math.max(featureData[fi + 3]!, 1.0 - Math.min(edgeDist * 4.0, 1.0));
+        featureData[fi + 3] = Math.max(featureData[fi + 3]!, 1.0 - Math.min(Math.abs(s) * 2.0, 1.0));
       }
     }
 

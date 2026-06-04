@@ -11,7 +11,7 @@ interface Props {
 export default function Tooltip({ text, children, position = "top", delay = 400 }: Props) {
   const [visible, setVisible] = useState(false);
   const [coords, setCoords] = useState({ top: 0, left: 0 });
-  const timeout = useRef<ReturnType<typeof setTimeout>>();
+  const timeout = useRef<ReturnType<typeof setTimeout>>(undefined);
   const triggerRef = useRef<HTMLDivElement>(null);
 
   const show = useCallback(() => {

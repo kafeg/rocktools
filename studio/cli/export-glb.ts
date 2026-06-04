@@ -44,6 +44,8 @@ interface Opts {
   runtime: boolean;
   materialOutput: string | null;
   captureOutput: string | null;
+  terrain: boolean;
+  surfaceSeeds: number[] | null;
 }
 
 function parseArgs(): Opts {
@@ -52,7 +54,7 @@ function parseArgs(): Opts {
     config: "", output: "", resolution: 2048,
     serverUrl: null, staticDir: null, timeout: 720_000,
     chromiumPath: null, headful: false, runtime: false, materialOutput: null,
-    captureOutput: null,
+    captureOutput: null, terrain: false, surfaceSeeds: null,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -68,6 +70,10 @@ function parseArgs(): Opts {
       case "--runtime": opts.runtime = true; break;
       case "--material-output": opts.materialOutput = argv[++i]!; break;
       case "--capture-output": opts.captureOutput = argv[++i]!; break;
+      case "--terrain": opts.terrain = true; break;
+      case "--surface-seed":
+        opts.surfaceSeeds = argv[++i]!.split(",").map((s) => parseInt(s.trim())).filter((n) => Number.isFinite(n));
+        break;
       case "--help": case "-h":
         console.error([
           "Usage: npx tsx export-glb.ts --config <json|@file> --output <path>",
@@ -76,6 +82,8 @@ function parseArgs(): Opts {
           "  --config <json|@file>   Pipeline config JSON (or @path to read file)",
           "  --output <path>         Output GLB file path",
           "  --resolution <n>        Texture bake resolution (default: 1024)",
+          "  --terrain               Export terrain patch(es) of the asteroid instead of the asteroid",
+          "  --surface-seed <list>   Comma-separated terrain variant seeds (e.g. 1,2,3). With --terrain.",
           "  --server <url>          Use running studio server",
           "  --static-dir <dir>      Serve pre-built dist dir (Docker mode)",
           "  --chromium <path>       Chromium executable path",
@@ -315,19 +323,64 @@ async function main() {
     );
     console.error("  Mesh ready");
 
-    if (opts.runtime) {
-      console.error("  Exporting runtime GLB...");
-    } else {
-      console.error(`  Baking textures (${opts.resolution}px)...`);
-    }
-    const glbBase64: string = opts.runtime
-      ? await page.evaluate(() => (window as any).__rocktools.exportRuntimeGLB())
-      : await page.evaluate((res: number) => (window as any).__rocktools.exportGLB(res), opts.resolution);
+    if (opts.terrain) {
+      // Export one terrain GLB per variant. Multiple variants → seed suffix.
+      const ext = path.extname(outputPath);
+      const base = outputPath.slice(0, outputPath.length - ext.length);
+      // Resolve variants. Explicit --surface-seed wins (bare seeds). Otherwise
+      // use config.terrain.variants — bare seeds OR {seed, params} objects
+      // (per-variant detail, e.g. one terrain per landing site).
+      type Variant = { seed: number; params?: Record<string, number> };
+      const baseParams: Record<string, number> = config.terrain?.params ?? {};
+      let variants: Variant[];
+      if (opts.surfaceSeeds) {
+        variants = opts.surfaceSeeds.map((s) => ({ seed: s }));
+      } else if (config.terrain?.variants?.length) {
+        variants = config.terrain.variants.map((v: number | Variant) =>
+          typeof v === "number" ? { seed: v } : { seed: v.seed, params: v.params });
+      } else {
+        variants = [{ seed: config.terrain?.surfaceSeed ?? 1 }];
+      }
+      const multi = variants.length > 1;
+      // The asteroid mesh was generated ONCE above; each variant only re-derives
+      // the terrain. Params are passed per-call (stateless override merged over
+      // the imported base) so variant settings never leak between iterations.
+      for (const v of variants) {
+        const override = { ...baseParams, ...(v.params ?? {}) };
+        console.error(`  Generating terrain (seed ${v.seed}, ${opts.resolution}px)...`);
+        const b64: string = await page.evaluate(
+          (s: number, res: number, p: Record<string, number>) => (window as any).__rocktools.exportTerrainGLB(s, res, p),
+          v.seed, opts.resolution, override,
+        );
+        const buf = Buffer.from(b64, "base64");
+        const dest = multi ? `${base}_seed${v.seed}${ext}` : outputPath;
+        fs.writeFileSync(dest, buf);
+        console.error(`  Output: ${dest} (${(buf.length / 1024).toFixed(0)} KB)`);
 
-    // Write to disk
-    const glbBuffer = Buffer.from(glbBase64, "base64");
-    fs.writeFileSync(outputPath, glbBuffer);
-    console.error(`  Output: ${outputPath} (${(glbBuffer.length / 1024).toFixed(0)} KB)`);
+        // Sidecar metadata (landing pads, slope stats) — also embedded in the GLB extras.
+        const metaJson: string = await page.evaluate(
+          (s: number, p: Record<string, number>) => (window as any).__rocktools.getTerrainMeta(s, p),
+          v.seed, override,
+        );
+        const metaPath = `${dest.slice(0, dest.length - path.extname(dest).length)}.meta.json`;
+        fs.writeFileSync(metaPath, metaJson + "\n");
+        console.error(`  Meta:   ${metaPath}`);
+      }
+    } else {
+      if (opts.runtime) {
+        console.error("  Exporting runtime GLB...");
+      } else {
+        console.error(`  Baking textures (${opts.resolution}px)...`);
+      }
+      const glbBase64: string = opts.runtime
+        ? await page.evaluate(() => (window as any).__rocktools.exportRuntimeGLB())
+        : await page.evaluate((res: number) => (window as any).__rocktools.exportGLB(res), opts.resolution);
+
+      // Write to disk
+      const glbBuffer = Buffer.from(glbBase64, "base64");
+      fs.writeFileSync(outputPath, glbBuffer);
+      console.error(`  Output: ${outputPath} (${(glbBuffer.length / 1024).toFixed(0)} KB)`);
+    }
 
     if (opts.materialOutput) {
       const materialAsset = await page.evaluate(() => (window as any).__rocktools.exportMaterialAsset());
