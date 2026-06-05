@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStudioStore } from "../stores/useStudioStore";
 import { exportTerrainGLB } from "../utils/export";
 import { deriveTerrainStyle, type TerrainParams } from "../utils/terrain";
@@ -49,6 +49,24 @@ export default function TerrainPanel() {
   const variants = useStudioStore((s) => s.terrainVariants);
   const isGenerating = useStudioStore((s) => s.isGeneratingTerrain);
   const hasMesh = useStudioStore((s) => !!s.currentMeshObj);
+  const instant = useStudioStore((s) => s.instantGenerate);
+
+  // Instant mode: auto-regenerate the terrain (debounced) when params change,
+  // matching the asteroid pipeline's behaviour. Baseline on mount so merely
+  // opening the panel / switching tabs doesn't trigger a regen. Seed changes go
+  // through 🎲 / Generate / variant-select which already regenerate explicitly.
+  const paramsKey = JSON.stringify(params);
+  const prevKeyRef = useRef<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => {
+    if (!instant) { prevKeyRef.current = paramsKey; return; }
+    if (prevKeyRef.current === null) { prevKeyRef.current = paramsKey; return; }
+    if (prevKeyRef.current === paramsKey) return;
+    prevKeyRef.current = paramsKey;
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => useStudioStore.getState().generateTerrain(), 500);
+    return () => clearTimeout(debounceRef.current);
+  }, [paramsKey, instant]);
 
   // What this terrain inherits from the current asteroid (style, not seed).
   const steps = useStudioStore((s) => s.steps);

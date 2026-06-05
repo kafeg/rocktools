@@ -38,7 +38,10 @@ export default function PipelineEditor() {
   const { generate } = useApi();
   const store = useStudioStore;
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const prevStateRef = useRef<string>("");
+  // null = "not yet baselined". On (re)mount we record the current state without
+  // generating, so merely switching back to this tab (which remounts the editor)
+  // does NOT kick off a from-scratch regeneration — only genuine edits do.
+  const prevStateRef = useRef<string | null>(null);
 
   const triggerGenerate = useCallback(() => {
     if (!instantGenerate || isGenerating) return;
@@ -51,6 +54,7 @@ export default function PipelineEditor() {
       createParams: state.createParams,
       steps: state.steps.filter((s) => !s.tool.startsWith("fx:") && !s.tool.startsWith("mesh:")),
     });
+    if (prevStateRef.current === null) { prevStateRef.current = stateKey; return; } // baseline on mount
     if (stateKey === prevStateRef.current) return;
     prevStateRef.current = stateKey;
 

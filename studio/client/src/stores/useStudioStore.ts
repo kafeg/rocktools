@@ -1263,6 +1263,20 @@ export const useStudioStore = create<StudioState>((set, get) => ({
         if (s.tool === "fx:features") {
           p.featureIntensity = clamp(varyNum(p.featureIntensity, 0.7, 1.3) as number, 0.1, 1);
           p.normalStrength = clamp(varyNum(p.normalStrength, 0.7, 1.4) as number, 0.3, 2);
+          // Jitter feature tints so presets don't always show the SAME (often
+          // purple) fissure interior — fissures get the widest spread.
+          const jh = (hex: string, amt: number): string => {
+            const rr = parseInt(hex.slice(1, 3), 16), gg = parseInt(hex.slice(3, 5), 16), bb = parseInt(hex.slice(5, 7), 16);
+            const sh = () => Math.round((rand() - 0.5) * 2 * amt);
+            const cl = (v: number) => Math.max(0, Math.min(255, v));
+            const hx = (v: number) => cl(v).toString(16).padStart(2, "0");
+            return `#${hx(rr + sh())}${hx(gg + sh())}${hx(bb + sh())}`;
+          };
+          if (typeof p.fissureTint === "string") p.fissureTint = jh(p.fissureTint, 24);
+          if (typeof p.craterTint === "string") p.craterTint = jh(p.craterTint, 12);
+          if (typeof p.boulderTint === "string") p.boulderTint = jh(p.boulderTint, 12);
+          if (typeof p.ridgeTint === "string") p.ridgeTint = jh(p.ridgeTint, 12);
+          if (typeof p.layerTint === "string") p.layerTint = jh(p.layerTint, 12);
         }
 
         return { id: `rand_${++stepCounter}`, tool: s.tool, params: p };
@@ -1402,7 +1416,7 @@ export const useStudioStore = create<StudioState>((set, get) => ({
             craterShading: randFloat(0.6, 1), craterTint: pick(["#151515", "#3a3020", "#483c38"]),
             boulderShading: randFloat(0.6, 1), boulderTint: pick(["#8a8a7a", "#6a6a5a", "#a0a090"]),
             ridgeShading: randFloat(0.6, 1), ridgeTint: pick(["#9a9080", "#7a7060", "#b0a090"]),
-            fissureShading: randFloat(0.7, 1), fissureTint: pick(["#202028", "#151520", "#303038"]),
+            fissureShading: randFloat(0.7, 1), fissureTint: pick(["#2a2420", "#1a1512", "#3a3028", "#2e2e2e", "#403838", "#3a2024", "#202830", "#151520", "#332b22"]),
             layerShading: randFloat(0.6, 1), layerTint: pick(["#686860", "#55554e", "#808078"]),
             normalStrength: randFloat(0.8, 1.8), // Reinforces detail textures in 3D viewport
           },

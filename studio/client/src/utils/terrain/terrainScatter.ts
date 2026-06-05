@@ -63,18 +63,25 @@ export function scatterRocks(
   const margin = size * 0.48; // keep rocks inside the footprint
   const instances: RockInstance[] = [];
 
-  // Two calibres so the ground reads naturally: a few boulders + lots of pebbles.
-  const place = (count: number, sizeMul: number) => {
+  // sizeMul scales the calibre; embedMul deepens small debris; flatBias>0 makes
+  // the calibre pool in flatter areas (scree/gravel accumulates where material
+  // settles, not on steep faces).
+  const place = (count: number, sizeMul: number, embedMul: number, flatBias: number) => {
     for (let k = 0; k < count; k++) {
       const x = (rand() - 0.5) * 2 * margin;
       const z = (rand() - 0.5) * 2 * margin;
       const u = rand();
+      const [nx, ny, nz] = sampleNormal(field, x, z);
+      // Reject (deterministically) on slopes for biased calibres → gravel fields.
+      if (flatBias > 0) {
+        const flatness = Math.max(0, ny); // 1 = flat, →0 = steep
+        if (rand() > Math.pow(flatness, flatBias)) continue;
+      }
       const scale = (params.minSize + (params.maxSize - params.minSize) * u * u) * size * sizeMul;
       const baseY = sampleHeight(field, x, z);
-      const [nx, ny, nz] = sampleNormal(field, x, z);
       instances.push({
         x,
-        y: baseY - params.embed * scale,
+        y: baseY - params.embed * embedMul * scale,
         z,
         scale,
         rotY: rand() * Math.PI * 2,
@@ -84,8 +91,9 @@ export function scatterRocks(
     }
   };
 
-  place(params.count, 1.0);          // boulders
-  place(params.count * 3, 0.35);     // pebbles / gravel
+  place(params.count, 1.0, 1.0, 0);        // boulders (anywhere)
+  place(params.count * 3, 0.35, 1.0, 0);   // pebbles (anywhere)
+  place(params.count * 8, 0.12, 1.6, 3);   // fine gravel — pools in flats
 
   return { templates, instances };
 }

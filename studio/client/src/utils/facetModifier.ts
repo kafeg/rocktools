@@ -133,7 +133,9 @@ export const facetModifier: MeshModifier = {
       const w = weights[i]!;
       if (w <= 0) continue;
 
-      const blend = w * p.flatness;
+      // Clamp to [0,1]: w·flatness can exceed 1 (flatness>1), which would
+      // overshoot past the plane and fold the vertex to the wrong side.
+      const blend = Math.min(1, w * p.flatness);
       positions[i * 3] = positions[i * 3]! * (1.0 - blend) + projX[i]! * blend;
       positions[i * 3 + 1] = positions[i * 3 + 1]! * (1.0 - blend) + projY[i]! * blend;
       positions[i * 3 + 2] = positions[i * 3 + 2]! * (1.0 - blend) + projZ[i]! * blend;

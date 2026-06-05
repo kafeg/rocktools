@@ -100,7 +100,7 @@ export const pitModifier: MeshModifier = {
       const r = pit.radius;
       const depthAbs = p.depth * r;
       // flatRadius: portion of pit that is flat-bottomed
-      const flatRadius = 1.0 - p.wallSteepness * 0.4;
+      const flatRadius = Math.max(0.05, 1.0 - p.wallSteepness * 0.4);
 
       for (let i = 0; i < mesh.vertexCount; i++) {
         const vx = positions[i * 3]!;
@@ -110,11 +110,17 @@ export const pitModifier: MeshModifier = {
         const dx = vx - cx;
         const dy = vy - cy;
         const dz = vz - cz;
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // Treat the pit as a CYLINDER along the cap normal, not a 3D ball: use the
+        // tangential (in-plane) distance for the footprint and gate by axial
+        // offset. The old 3D-distance test pulled in vertices on the side/far
+        // wall of bumps and shoved them full-depth along one normal → side-wall
+        // self-intersections and vertical "tent" spikes.
+        const dn = dx * nx + dy * ny + dz * nz;             // axial component
+        const radial = Math.sqrt(Math.max(0, dx * dx + dy * dy + dz * dz - dn * dn));
+        if (radial > r) continue;
+        if (Math.abs(dn) > r) continue;                     // stay near the cap
 
-        if (dist > r) continue;
-
-        const t = dist / r; // 0 at center, 1 at edge
+        const t = radial / r; // 0 at axis, 1 at footprint edge
 
         // Displacement profile: flat bottom → steep wall → surface
         let disp: number;

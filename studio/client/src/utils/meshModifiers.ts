@@ -143,7 +143,9 @@ export function pickRandomSurfacePoint(
   rand: () => number,
 ): { point: [number, number, number]; normal: [number, number, number] } {
   let r = rand() * totalArea;
-  let triIdx = 0;
+  // Fall back to the LAST triangle (the remainder bucket) if float accumulation
+  // leaves r > 0 — falling back to index 0 would bias toward the first triangle.
+  let triIdx = areas.length - 1;
   for (let i = 0; i < areas.length; i++) {
     r -= areas[i]!;
     if (r <= 0) { triIdx = i; break; }

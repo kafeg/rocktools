@@ -59,10 +59,27 @@ export const boulderModifier: MeshModifier = {
     interface Boulder {
       center: [number, number, number];
       normal: [number, number, number];
+      tangent: [number, number, number];
+      bitangent: [number, number, number];
       radius: number;
       peakHeight: number;
       irregularity: number[];
     }
+
+    // Stable orthonormal tangent basis from a normal (avoids the ill-conditioned
+    // global-axis projection that made lobe orientation jump near ±X/±Y normals).
+    const tangentBasis = (n: [number, number, number]): [[number, number, number], [number, number, number]] => {
+      const ref: [number, number, number] = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      let tx = ref[1] * n[2] - ref[2] * n[1];
+      let ty = ref[2] * n[0] - ref[0] * n[2];
+      let tz = ref[0] * n[1] - ref[1] * n[0];
+      const tl = Math.hypot(tx, ty, tz) || 1;
+      tx /= tl; ty /= tl; tz /= tl;
+      const bx = n[1] * tz - n[2] * ty;
+      const by = n[2] * tx - n[0] * tz;
+      const bz = n[0] * ty - n[1] * tx;
+      return [[tx, ty, tz], [bx, by, bz]];
+    };
 
     const boulders: Boulder[] = [];
     for (let i = 0; i < p.count; i++) {
@@ -71,6 +88,7 @@ export const boulderModifier: MeshModifier = {
       const radius = size * meshRadius;
 
       const { point, normal } = pickRandomSurfacePoint(mesh, areas, totalArea, rand);
+      const [tangent, bitangent] = tangentBasis(normal);
 
       const lobes: number[] = [];
       for (let l = 0; l < 8; l++) {
@@ -80,6 +98,8 @@ export const boulderModifier: MeshModifier = {
       boulders.push({
         center: point,
         normal,
+        tangent,
+        bitangent,
         radius,
         peakHeight: radius * p.height,
         irregularity: lobes,
@@ -109,13 +129,15 @@ export const boulderModifier: MeshModifier = {
 
         if (t >= 1.5) continue;
 
-        const dot = dx * boulder.normal[0] + dy * boulder.normal[1] + dz * boulder.normal[2];
-        const angle = Math.atan2(dy - boulder.normal[1] * dot, dx - boulder.normal[0] * dot);
+        // Azimuth in the boulder's own tangent frame (stable for any normal).
+        const tComp = dx * boulder.tangent[0] + dy * boulder.tangent[1] + dz * boulder.tangent[2];
+        const bComp = dx * boulder.bitangent[0] + dy * boulder.bitangent[1] + dz * boulder.bitangent[2];
+        const angle = Math.atan2(bComp, tComp);
         const lobeIdx = ((angle / (2 * Math.PI) + 0.5) * boulder.irregularity.length) % boulder.irregularity.length;
         const li = Math.floor(lobeIdx);
         const lf = lobeIdx - li;
-        const lobeScale = boulder.irregularity[li % boulder.irregularity.length]! * (1 - lf)
-                        + boulder.irregularity[(li + 1) % boulder.irregularity.length]! * lf;
+        const lobeScale = Math.max(0.1, boulder.irregularity[li % boulder.irregularity.length]! * (1 - lf)
+                        + boulder.irregularity[(li + 1) % boulder.irregularity.length]! * lf);
 
         const effectiveT = t / lobeScale;
         if (effectiveT >= 1.0) continue;

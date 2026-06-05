@@ -103,17 +103,22 @@ export interface MountainLayerParams {
 }
 
 export function applyMountains(field: TerrainField, p: MountainLayerParams, seed: number): void {
-  const n = makeNoise2D(seed);
-  const opts: FbmOptions = {
-    octaves: Math.max(1, Math.round(p.octaves)),
-    lacunarity: 2.0,
-    persistence: 0.5,
-    frequency: p.frequency / field.size,
-  };
   const { res, size, heights } = field;
+  const oct = Math.max(2, Math.min(5, Math.round(p.octaves)));
 
-  // Place a few mountain regions; outside their radial falloff the terrain is
-  // left flat, so massifs read as distinct ranges rather than a blanket.
+  // Ridged field = ridgelines; billow field = smooth rounded mass. We blend them
+  // and DOMAIN-WARP the inputs so ridges wind organically instead of forming one
+  // spike with sharp radial pickets. Lower persistence weakens the tiny
+  // high-frequency sub-ridges that read as "spiky".
+  const nRidge = makeNoise2D(seed);
+  const nBillow = makeNoise2D(seed ^ 0x68bc21);
+  const nWarpX = makeNoise2D(seed ^ 0x1f83d9);
+  const nWarpY = makeNoise2D(seed ^ 0x2b3e6c);
+  const ridgeOpts: FbmOptions = { octaves: oct, lacunarity: 2.0, persistence: 0.42, frequency: p.frequency / size };
+  const billowOpts: FbmOptions = { octaves: Math.max(2, oct - 1), lacunarity: 2.0, persistence: 0.5, frequency: (p.frequency * 0.7) / size };
+  const warpOpts: FbmOptions = { octaves: 2, lacunarity: 2.0, persistence: 0.5, frequency: (p.frequency * 0.5) / size };
+  const warp = size * 0.12;
+
   const rand = mulberry32(seed ^ 0x51ed270b);
   const regionCount = Math.max(1, Math.round(p.regions));
   const centers: Array<{ cx: number; cz: number; radius: number }> = [];
@@ -121,7 +126,7 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
     centers.push({
       cx: (rand() - 0.5) * size * 0.9,
       cz: (rand() - 0.5) * size * 0.9,
-      radius: size * (0.12 + rand() * 0.18),
+      radius: size * (0.14 + rand() * 0.2),
     });
   }
 
@@ -129,7 +134,6 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
     const z = coord(j, res, size);
     for (let i = 0; i < res; i++) {
       const x = coord(i, res, size);
-      // Strongest region influence at this cell (1 at a centre → 0 at its rim).
       let mask = 0;
       for (const c of centers) {
         const d = Math.hypot(x - c.cx, z - c.cz);
@@ -137,8 +141,16 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
         if (m > mask) mask = m;
       }
       if (mask <= 0) continue;
-      const r = ridged(n, x, z, opts);
-      heights[j * res + i] += r * p.height * mask * mask;
+
+      const wx = fbm(nWarpX, x, z, warpOpts) * warp;
+      const wy = fbm(nWarpY, x, z, warpOpts) * warp;
+      // Rounded ridgelines: pow<1 broadens crests so they aren't razor-sharp.
+      const rid = Math.pow(ridged(nRidge, x + wx, z + wy, ridgeOpts), 0.75);
+      const billow = fbm(nBillow, x + wx, z + wy, billowOpts) * 0.5 + 0.5; // [0,1]
+      // Mostly ridgelines, with billow filling the valleys so it reads as a
+      // massif rather than isolated spikes. smoothstep(mask) eases the onset.
+      const hN = 0.6 * rid + 0.4 * billow;
+      heights[j * res + i] += hN * p.height * (mask * (3 - 2 * mask) * mask);
     }
   }
 }

@@ -109,12 +109,19 @@ export function deriveTerrainStyle(
       }
     : null;
 
+  // Ridges/fissures inherit the asteroid's fractions, but on a large flat patch
+  // those translate to huge "sausage" bulges/trenches — so scale their amplitude
+  // and width WAY down for terrain (they should be subtle linear features, not
+  // dominant landforms).
+  const RIDGE_AMP = 0.18, RIDGE_WIDTH = 0.4;
+  const FISSURE_AMP = 0.22, FISSURE_WIDTH = 0.45;
+
   const ridgeStep = findStep(steps, "mesh:ridges");
   const ridges: LineLayerParams | null = ridgeStep
     ? {
         count: Math.max(0, Math.round(num(ridgeStep.params.count, 4))),
-        amount: num(ridgeStep.params.height, 0.08),
-        width: num(ridgeStep.params.width, 0.06),
+        amount: num(ridgeStep.params.height, 0.08) * RIDGE_AMP,
+        width: num(ridgeStep.params.width, 0.06) * RIDGE_WIDTH,
         length: num(ridgeStep.params.length, 0.8),
         jaggedness: num(ridgeStep.params.irregularity, 0.3),
         kind: "ridge",
@@ -125,8 +132,8 @@ export function deriveTerrainStyle(
   const fissures: LineLayerParams | null = fissureStep
     ? {
         count: Math.max(0, Math.round(num(fissureStep.params.count, 5))),
-        amount: num(fissureStep.params.depth, 0.03),
-        width: num(fissureStep.params.width, 0.03),
+        amount: num(fissureStep.params.depth, 0.03) * FISSURE_AMP,
+        width: num(fissureStep.params.width, 0.03) * FISSURE_WIDTH,
         length: num(fissureStep.params.length, 0.5),
         jaggedness: num(fissureStep.params.jaggedness, 0.4),
         kind: "fissure",

@@ -83,9 +83,10 @@ export const craterModifier: MeshModifier = {
     const featureData = ensureFeatureData(mesh);
 
     const craters: Crater[] = [];
+    const sizeExp = p.sizeExponent > 0 ? p.sizeExponent : 1.8; // guard against ÷0 / sign flip
     for (let i = 0; i < p.count; i++) {
-      const u = rand();
-      const relSize = p.minSize * Math.pow(u, -1.0 / p.sizeExponent);
+      const u = rand() || 1e-6; // avoid Math.pow(0, -k) → Infinity
+      const relSize = p.minSize * Math.pow(u, -1.0 / sizeExp);
       const clampedSize = Math.min(relSize, p.maxSize);
       const radius = clampedSize * meshRadius;
 

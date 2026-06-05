@@ -280,7 +280,7 @@ export const rockModifier: MeshModifier = {
     if (rawParams.maxSize !== undefined) p.maxSize = Number(rawParams.maxSize);
     if (rawParams.roughness !== undefined) p.roughness = Number(rawParams.roughness);
     if (rawParams.detail !== undefined) p.detail = Math.round(Number(rawParams.detail));
-    if (rawParams.embedDepth !== undefined) p.embedDepth = Number(rawParams.embedDepth);
+    if (rawParams.embedDepth !== undefined) p.embedDepth = Math.max(0, Math.min(0.9, Number(rawParams.embedDepth)));
     if (rawParams.templates !== undefined) p.templates = Math.max(1, Math.min(8, Math.round(Number(rawParams.templates))));
     if (rawParams.avoidOverlap !== undefined) p.avoidOverlap = rawParams.avoidOverlap === true || rawParams.avoidOverlap === "true";
     if (rawParams.seed !== undefined) p.seed = Number(rawParams.seed);

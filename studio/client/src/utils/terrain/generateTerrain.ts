@@ -57,11 +57,11 @@ export const DEFAULT_TERRAIN_PARAMS: TerrainParams = {
   footprint: 20,
   resolution: 768,
   craterDensity: 1.5,
-  rockDensity: 4,
+  rockDensity: 1.5,
   detailBoost: 4,
   mountainAmount: 1.5,
-  fissureDensity: 1,
-  ridgeDensity: 1,
+  fissureDensity: 0.25,
+  ridgeDensity: 0.25,
   erosion: 0.4,
 };
 

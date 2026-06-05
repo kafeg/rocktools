@@ -39,6 +39,13 @@ const PARAM_META: Record<string, { label: string; tip: string; min: number; max:
 // Per-step-type overrides — takes priority over PARAM_META for specific mesh modifier types
 type ParamMetaEntry = { label: string; tip: string; min: number; max: number; step: number; type: "slider" | "integer" | "select" | "toggle" };
 const STEP_PARAM_OVERRIDES: Record<string, Record<string, ParamMetaEntry>> = {
+  "mesh:ridges": {
+    // `height` is a FRACTION OF MESH RADIUS here (not boulder-relative), so it
+    // needs its own range — otherwise it inherits the boulder 0.1–2.0 range and
+    // ridges become 0.1×–2× the asteroid radius tall (can't reach 0, huge max).
+    height: { label: "Height", tip: "Ridge height (fraction of mesh radius)", min: 0, max: 0.12, step: 0.002, type: "slider" },
+    width:  { label: "Width",  tip: "Ridge cross-section width (fraction of mesh radius)", min: 0.02, max: 0.25, step: 0.005, type: "slider" },
+  },
   "mesh:pits": {
     count:         { label: "Count",     tip: "Number of degassing pits",                          min: 5,     max: 100, step: 1,    type: "integer" },
     minSize:       { label: "Min size",  tip: "Minimum pit diameter (fraction of mesh radius)",     min: 0.003, max: 0.08, step: 0.001, type: "slider" },

@@ -21,10 +21,10 @@ export interface RidgeParams {
 
 const DEFAULTS: RidgeParams = {
   count: 4,
-  height: 0.08,
-  width: 0.15,
-  length: 0.8,
-  irregularity: 0.3,
+  height: 0.05,
+  width: 0.1,
+  length: 0.6,
+  irregularity: 0.4,
   mode: "ridge",
   avoidOverlap: false,
   seed: 1,
@@ -74,8 +74,21 @@ function generateRidgePath(
   rand: () => number,
 ): RidgeSegment[] {
   const segments: RidgeSegment[] = [];
-  const numSegments = Math.max(8, Math.floor(angularLength * 30));
+  const numSegments = Math.max(10, Math.floor(angularLength * 45));
   const perpDir = vecCross(axis, startDir);
+
+  // Meander: tilt the path off its great circle (toward ±axis) with a couple of
+  // smooth harmonics, so ridges curve naturally instead of tracing a perfectly
+  // straight "weld seam" across the body. Height/width also vary smoothly
+  // (low-frequency sine) rather than per-segment white noise → no lumpiness.
+  const m1Amp = (0.12 + 0.35 * irregularity);
+  const m1Freq = 1 + Math.floor(rand() * 2);
+  const m1Phase = rand() * Math.PI * 2;
+  const m2Amp = (0.05 + 0.15 * irregularity);
+  const m2Freq = 3 + Math.floor(rand() * 3);
+  const m2Phase = rand() * Math.PI * 2;
+  const hFreq = 1 + Math.floor(rand() * 2);
+  const hPhase = rand() * Math.PI * 2;
 
   for (let i = 0; i <= numSegments; i++) {
     const frac = i / numSegments;
@@ -83,11 +96,25 @@ function generateRidgePath(
 
     const cosA = Math.cos(angle);
     const sinA = Math.sin(angle);
-    const point: [number, number, number] = [
-      (startDir[0] * cosA + perpDir[0] * sinA) * meshRadius,
-      (startDir[1] * cosA + perpDir[1] * sinA) * meshRadius,
-      (startDir[2] * cosA + perpDir[2] * sinA) * meshRadius,
+    const baseDir: [number, number, number] = [
+      startDir[0] * cosA + perpDir[0] * sinA,
+      startDir[1] * cosA + perpDir[1] * sinA,
+      startDir[2] * cosA + perpDir[2] * sinA,
     ];
+
+    const endTaper = Math.sin(frac * Math.PI);
+    // Lateral wander (along the rotation axis = out of the great-circle plane),
+    // tapered to 0 at the ends so the ridge starts/ends cleanly.
+    const lateral = endTaper * (
+      m1Amp * Math.sin(frac * Math.PI * m1Freq + m1Phase) +
+      m2Amp * Math.sin(frac * Math.PI * m2Freq + m2Phase)
+    );
+    const dir = vecNormalize([
+      baseDir[0] + axis[0] * lateral,
+      baseDir[1] + axis[1] * lateral,
+      baseDir[2] + axis[2] * lateral,
+    ]);
+    const point: [number, number, number] = [dir[0] * meshRadius, dir[1] * meshRadius, dir[2] * meshRadius];
 
     const tangent = vecNormalize([
       -startDir[0] * sinA + perpDir[0] * cosA,
@@ -95,15 +122,14 @@ function generateRidgePath(
       -startDir[2] * sinA + perpDir[2] * cosA,
     ]);
 
-    // Height variation along the ridge: taper at ends + noise
-    const endTaper = Math.sin(frac * Math.PI);
-    const heightNoise = 1.0 + irregularity * (rand() * 2 - 1) * 0.8;
-    const widthNoise = 1.0 + irregularity * (rand() * 2 - 1) * 0.4;
+    const heightNoise = 1.0 + irregularity * 0.4 * Math.sin(frac * Math.PI * 2 * hFreq + hPhase);
+    const widthNoise = 1.0 + irregularity * 0.25 * Math.sin(frac * Math.PI * 2 * hFreq + hPhase + 1.7);
 
     segments.push({
       point,
       tangent,
-      height: baseHeight * endTaper * heightNoise,
+      // Smoothstep end taper for a rounded start/end instead of a hard cap.
+      height: baseHeight * (endTaper * endTaper * (3 - 2 * endTaper)) * heightNoise,
       halfWidth: baseHalfWidth * (0.6 + 0.4 * endTaper) * widthNoise,
     });
   }
@@ -187,7 +213,8 @@ export const ridgeModifier: MeshModifier = {
       const randomDir: [number, number, number] = [rand() - 0.5, rand() - 0.5, rand() - 0.5];
       const crossDir = vecCross(axis, randomDir);
       const startDir = vecNormalize(crossDir);
-      const angularLength = p.length * Math.PI * (0.5 + rand() * 0.5);
+      // Shorter arcs → localized scarps instead of a band wrapping the whole body.
+      const angularLength = p.length * Math.PI * (0.3 + rand() * 0.35);
 
       const baseHeight = p.height * meshRadius * sign;
       const baseHalfWidth = p.width * meshRadius * 0.5;
@@ -208,10 +235,19 @@ export const ridgeModifier: MeshModifier = {
 
       if (p.avoidOverlap && occupancy[vi]! > meshRadius * 0.01) continue;
 
+      // Ridge paths live on a sphere of `meshRadius`, but real asteroid vertices
+      // sit well inside it — measuring distance from the raw vertex makes the arc
+      // float above the surface and only graze the highest bumps (uneven/abrupt
+      // ridges). Project the vertex onto that sphere first, like mesh:fissures.
+      const vr = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+      const px = (vx / vr) * meshRadius;
+      const py = (vy / vr) * meshRadius;
+      const pz = (vz / vr) * meshRadius;
+
       let totalDisplacement = 0;
 
       for (const segments of allRidges) {
-        const result = distToRidgePath([vx, vy, vz], segments);
+        const result = distToRidgePath([px, py, pz], segments);
         if (!result) continue;
 
         const seg = segments[result.segIdx]!;
@@ -220,13 +256,15 @@ export const ridgeModifier: MeshModifier = {
         const localHalfWidth = (seg.halfWidth + nextSeg.halfWidth) * 0.5;
         const localHeight = (seg.height + nextSeg.height) * 0.5;
 
+        if (localHalfWidth <= 1e-9) continue;
         const t = result.dist / localHalfWidth;
         if (t >= 1.0) continue;
 
-        // Asymmetric profile: steeper on one side, gentler on the other
-        const profile = Math.cos(t * Math.PI * 0.5);
-        const asymmetry = 0.7 + 0.3 * profile;
-        totalDisplacement += localHeight * profile * asymmetry;
+        // Smoothstep cross-section: rounded crest with zero-slope toes so the
+        // ridge blends into the surface (no sharp flanks / gorge-like edges).
+        const e = 1 - t;
+        const profile = e * e * (3 - 2 * e);
+        totalDisplacement += localHeight * profile;
       }
 
       if (Math.abs(totalDisplacement) > 1e-10) {

@@ -98,14 +98,14 @@ export const erosionModifier: MeshModifier = {
         displacements[i] = disp;
       }
 
-      // Apply displacements along normals
-      const normals2 = computeVertexNormals(positions, mesh.indices, mesh.vertexCount);
+      // Apply displacements along normals. `positions` is unchanged since the
+      // `normals` above were computed, so reuse them (no need to recompute).
       for (let i = 0; i < mesh.vertexCount; i++) {
         const d = displacements[i]!;
         if (Math.abs(d) < 1e-12) continue;
-        positions[i * 3] += normals2[i * 3]! * d;
-        positions[i * 3 + 1] += normals2[i * 3 + 1]! * d;
-        positions[i * 3 + 2] += normals2[i * 3 + 2]! * d;
+        positions[i * 3] += normals[i * 3]! * d;
+        positions[i * 3 + 1] += normals[i * 3 + 1]! * d;
+        positions[i * 3 + 2] += normals[i * 3 + 2]! * d;
       }
     }
 
