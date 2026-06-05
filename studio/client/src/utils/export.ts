@@ -768,6 +768,22 @@ export async function exportTerrainGLBToBuffer(
  * asteroids. The material in the GLB is just a placeholder the runtime overrides;
  * what matters is the geometry + feature attributes + landing-pad extras.
  */
+/**
+ * Layout of the packed rock-instance array stored in glTF extras
+ * (scene.userData.rocktoolsScatter). One instance = `stride` consecutive
+ * numbers: [templateIdx, x, y, z, nx, ny, nz, rotY, scale]. The game rebuilds
+ * an InstancedMesh per template (same transform composition as the studio's
+ * RockInstances), so the GLB stays tiny instead of merging every rock.
+ */
+export const ROCK_INSTANCE_STRIDE = 9;
+
+export interface RocktoolsScatterExtras {
+  stride: number;
+  templateCount: number;
+  /** Flat array, ROCK_INSTANCE_STRIDE numbers per instance. */
+  instances: number[];
+}
+
 export async function exportTerrainRuntimeGLBToBuffer(
   terrain: MeshData,
   scatter: TerrainScatter | null,
@@ -799,32 +815,46 @@ export async function exportTerrainRuntimeGLBToBuffer(
   terrainMesh.name = "terrain";
   group.add(terrainMesh);
 
-  // Rocks — merged geometry. Give them zero feature attributes so the SAME
-  // runtime shader renders them (matches the studio's RockInstances, which use
-  // AsteroidMaterial with empty featureData).
-  const rockGeo = scatter ? mergeScatterToGeometry(scatter) : null;
-  let rockMat: THREE.MeshStandardMaterial | null = null;
-  if (rockGeo) {
-    const vc = rockGeo.getAttribute("position").count;
-    rockGeo.setAttribute("featureData", new THREE.BufferAttribute(new Float32Array(vc * 4), 4));
-    rockGeo.setAttribute("featureData2", new THREE.BufferAttribute(new Float32Array(vc * 4), 4));
-    rockMat = new THREE.MeshStandardMaterial({
-      color: shaderParams.baseColor,
-      roughness: shaderParams.roughness,
-      metalness: shaderParams.metalness,
+  // Rocks as INSTANCES, not merged geometry: ship each template as a small
+  // (hidden) mesh + a packed per-instance transform array in extras. The game
+  // reconstructs an InstancedMesh per template — same as the studio viewer —
+  // keeping the GLB orders of magnitude smaller than a merged rock blob.
+  const disposables: THREE.BufferGeometry[] = [terrainGeo];
+  const matDisposables: THREE.Material[] = [terrainMat];
+  if (scatter && scatter.instances.length > 0) {
+    scatter.templates.forEach((tpl, i) => {
+      const g = meshDataToGeometry(tpl, { center: false }); // carries zero featureData
+      const m = new THREE.MeshStandardMaterial({
+        color: shaderParams.baseColor,
+        roughness: shaderParams.roughness,
+        metalness: shaderParams.metalness,
+      });
+      const mesh = new THREE.Mesh(g, m);
+      mesh.name = `rock_template_${i}`;
+      mesh.visible = false; // source geometry only; instances are rebuilt at runtime
+      group.add(mesh);
+      disposables.push(g);
+      matDisposables.push(m);
     });
-    const rocks = new THREE.Mesh(rockGeo, rockMat);
-    rocks.name = "rocks";
-    group.add(rocks);
+
+    const instances: number[] = [];
+    for (const r of scatter.instances) {
+      instances.push(r.templateIdx, r.x, r.y, r.z, r.nx, r.ny, r.nz, r.rotY, r.scale);
+    }
+    const scatterExtras: RocktoolsScatterExtras = {
+      stride: ROCK_INSTANCE_STRIDE,
+      templateCount: scatter.templates.length,
+      instances,
+    };
+    group.userData.rocktoolsScatter = scatterExtras;
   }
 
   const exporter = new GLTFExporter();
-  const glb = (await exporter.parseAsync(group, { binary: true })) as ArrayBuffer;
+  // onlyVisible:false so the hidden rock-template meshes are still exported.
+  const glb = (await exporter.parseAsync(group, { binary: true, onlyVisible: false })) as ArrayBuffer;
 
-  terrainMat.dispose();
-  terrainGeo.dispose();
-  rockGeo?.dispose();
-  rockMat?.dispose();
+  for (const g of disposables) g.dispose();
+  for (const m of matDisposables) m.dispose();
 
   return glb;
 }

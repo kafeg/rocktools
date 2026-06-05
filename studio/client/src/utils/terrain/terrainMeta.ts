@@ -97,27 +97,41 @@ export function computeTerrainMeta(
   }
 
   interface Cand { x: number; z: number; slope: number; }
-  const cands: Cand[] = [];
-  for (let gj = 0; gj < G; gj++) {
-    for (let gi = 0; gi < G; gi++) {
-      if (occupied[gj * G + gi]) continue;
-      const fi = Math.round((gi / (G - 1)) * (res - 1));
-      const fj = Math.round((gj / (G - 1)) * (res - 1));
-      const s = slopeAt(field, fi, fj);
-      if (s < flatThresh) cands.push({ x: coord(fi), z: coord(fj), slope: s });
+  const collectCandidates = (respectRocks: boolean): Cand[] => {
+    const out: Cand[] = [];
+    for (let gj = 0; gj < G; gj++) {
+      for (let gi = 0; gi < G; gi++) {
+        if (respectRocks && occupied[gj * G + gi]) continue;
+        const fi = Math.round((gi / (G - 1)) * (res - 1));
+        const fj = Math.round((gj / (G - 1)) * (res - 1));
+        const s = slopeAt(field, fi, fj);
+        if (s < flatThresh) out.push({ x: coord(fi), z: coord(fj), slope: s });
+      }
     }
-  }
-  cands.sort((a, b) => a.slope - b.slope);
+    out.sort((a, b) => a.slope - b.slope);
+    return out;
+  };
 
-  // Greedy non-overlapping selection.
-  const landingPads: LandingPad[] = [];
-  for (const c of cands) {
-    if (landingPads.length >= 8) break;
-    if (landingPads.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < padRadius * 2)) continue;
-    // Sample height at the pad centre (nearest cell).
-    const fi = Math.min(res - 1, Math.max(0, Math.round((c.x / size + 0.5) * (res - 1))));
-    const fj = Math.min(res - 1, Math.max(0, Math.round((c.z / size + 0.5) * (res - 1))));
-    landingPads.push({ x: c.x, y: heights[fj * res + fi]!, z: c.z, radius: padRadius, slope: c.slope });
+  // Greedy non-overlapping selection of the flattest spots.
+  const selectPads = (cands: Cand[]): LandingPad[] => {
+    const pads: LandingPad[] = [];
+    for (const c of cands) {
+      if (pads.length >= 8) break;
+      if (pads.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < padRadius * 2)) continue;
+      const fi = Math.min(res - 1, Math.max(0, Math.round((c.x / size + 0.5) * (res - 1))));
+      const fj = Math.min(res - 1, Math.max(0, Math.round((c.z / size + 0.5) * (res - 1))));
+      pads.push({ x: c.x, y: heights[fj * res + fi]!, z: c.z, radius: padRadius, slope: c.slope });
+    }
+    return pads;
+  };
+
+  // Prefer flat AND rock-free spots. On rocky surfaces (e.g. Bennu-class) every
+  // flat cell may be near a rock, leaving none — fall back to the flattest cells
+  // ignoring rock occupancy so there's always at least one landing pad (the
+  // lander clears small rocks). flatFraction is high, so this always yields one.
+  let landingPads = selectPads(collectCandidates(true));
+  if (landingPads.length === 0) {
+    landingPads = selectPads(collectCandidates(false));
   }
 
   return {

@@ -348,9 +348,13 @@ async function main() {
       // The asteroid mesh was generated ONCE above; each variant only re-derives
       // the terrain. Params are passed per-call (stateless override merged over
       // the imported base) so variant settings never leak between iterations.
+      // Timestamp + elapsed-since prefix so a stuck step is obvious in the log.
+      const clock = () => new Date().toTimeString().slice(0, 8);
+      const step = (msg: string) => console.error(`  [${clock()}] ${msg}`);
       for (const v of variants) {
         const override = { ...baseParams, ...(v.params ?? {}) };
-        console.error(`  Generating terrain (seed ${v.seed}, runtime shader)...`);
+        const vStart = Date.now();
+        step(`Generating terrain (seed ${v.seed}, runtime shader)...`);
         // Runtime GLB: keeps feature attributes + no baked albedo, so the game
         // applies the same procedural shader + textures as the studio view.
         const b64: string = await page.evaluate(
@@ -360,7 +364,7 @@ async function main() {
         const buf = Buffer.from(b64, "base64");
         const dest = multi ? `${base}_seed${v.seed}${ext}` : outputPath;
         fs.writeFileSync(dest, buf);
-        console.error(`  Output: ${dest} (${(buf.length / 1024).toFixed(0)} KB)`);
+        step(`Output: ${dest} (${(buf.length / 1024).toFixed(0)} KB, +${((Date.now() - vStart) / 1000).toFixed(1)}s)`);
 
         // Sidecar metadata (landing pads, slope stats) — also embedded in the GLB extras.
         const metaJson: string = await page.evaluate(
@@ -370,13 +374,14 @@ async function main() {
         const destBase = dest.slice(0, dest.length - path.extname(dest).length);
         const metaPath = `${destBase}.meta.json`;
         fs.writeFileSync(metaPath, metaJson + "\n");
-        console.error(`  Meta:   ${metaPath}`);
+        step(`Meta:   ${metaPath}`);
 
         // Isometric thumbnail — reuses the surface-view viewer + the same
         // capture path as the asteroid screenshot. Non-fatal on failure.
         if (opts.terrainImage) {
           try {
-            console.error(`  Capturing terrain image (seed ${v.seed})...`);
+            const imgStart = Date.now();
+            step(`Capturing terrain image (seed ${v.seed})...`);
             const imgB64: string = await page.evaluate(
               (s: number, p: Record<string, number>) => (window as any).__rocktools.exportTerrainImage(s, p),
               v.seed, override,
@@ -384,7 +389,7 @@ async function main() {
             const imgPath = `${destBase}.jpg`;
             const imgBuf = Buffer.from(imgB64, "base64");
             fs.writeFileSync(imgPath, imgBuf);
-            console.error(`  Image:  ${imgPath} (${(imgBuf.length / 1024).toFixed(0)} KB)`);
+            step(`Image:  ${imgPath} (${(imgBuf.length / 1024).toFixed(0)} KB, +${((Date.now() - imgStart) / 1000).toFixed(1)}s)`);
           } catch (e: any) {
             console.error(`  WARN: terrain image capture failed for seed ${v.seed}: ${e?.message ?? e}`);
           }
