@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import { useStudioStore } from "./stores/useStudioStore";
 import { runRocktool, isWasmAvailable } from "./wasm/rockcreateWasm";
-import { exportGLBToBuffer, exportRuntimeGLBToBuffer, exportTerrainGLBToBuffer } from "./utils/export";
+import { exportGLBToBuffer, exportRuntimeGLBToBuffer, exportTerrainGLBToBuffer, exportTerrainRuntimeGLBToBuffer } from "./utils/export";
 import { normalizeObj } from "./utils/meshParsing";
 import { deriveTerrainStyle, generateTerrain as runGenerateTerrain } from "./utils/terrain";
 
@@ -105,6 +105,25 @@ async function exportTerrainGLB(
   const { mesh, scatter, meta } = runGenerateTerrain(style, params, surfaceSeed);
   const shaderParams = state.collectShaderParams();
   const glb = await exportTerrainGLBToBuffer(mesh, scatter, shaderParams, resolution, meta);
+  return glbToBase64(glb);
+}
+
+/**
+ * Runtime terrain GLB (game pipeline): keeps feature attributes + no baked
+ * albedo, so the game applies the SAME procedural shader + textures the studio
+ * surface view uses. Stateless per-call params (mirrors exportTerrainGLB).
+ */
+async function exportTerrainRuntimeGLB(
+  surfaceSeed: number,
+  paramsOverride?: Record<string, number>,
+): Promise<string> {
+  const state = useStudioStore.getState();
+  if (!state.currentMeshObj) throw new Error("No asteroid — call generate() first");
+  const style = deriveTerrainStyle(state.steps, state.createParams);
+  const params = { ...state.terrainParams, ...(paramsOverride ?? {}) };
+  const { mesh, scatter, meta } = runGenerateTerrain(style, params, surfaceSeed);
+  const shaderParams = state.collectShaderParams();
+  const glb = await exportTerrainRuntimeGLBToBuffer(mesh, scatter, shaderParams, meta);
   return glbToBase64(glb);
 }
 
@@ -226,6 +245,100 @@ async function exportImage(
   return dataUrl.split(",")[1]!;
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/** Wait until terrain generation settles (mesh present, not generating). */
+async function waitForTerrainIdle(timeoutMs: number = 120_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    const s = useStudioStore.getState();
+    if (!s.isGeneratingTerrain && s.terrainMesh) return;
+    await nextFrame();
+  }
+  throw new Error("Terrain generation timed out");
+}
+
+/**
+ * Render an isometric thumbnail of a terrain variant by REUSING the asteroid
+ * screenshot path: drive the live studio viewer into "surface" mode for this
+ * variant (same AsteroidMaterial shader, studio lighting, and the diagonal
+ * "landed" camera the surface view uses), then capture it with exportImage.
+ *
+ * Sets store state (viewMode/terrainParams/surfaceSeed) — call AFTER the pure
+ * GLB/meta export for the same variant. paramsOverride is merged over the base
+ * terrain params (mirrors exportTerrainGLB's per-variant override).
+ */
+async function exportTerrainImage(
+  surfaceSeed: number,
+  paramsOverride?: Record<string, number>,
+  width: number = 1080,
+  height: number = 1080,
+): Promise<string> {
+  const store = useStudioStore.getState();
+  if (!store.currentMeshObj) throw new Error("No asteroid — call generate() first");
+
+  if (paramsOverride) store.setTerrainParams(paramsOverride);
+  store.setSurfaceSeed(surfaceSeed);
+  store.setViewMode("surface"); // may auto-trigger generate when no terrain yet
+  if (!useStudioStore.getState().isGeneratingTerrain) store.generateTerrain();
+
+  await waitForTerrainIdle();
+  // Let the React viewer rebuild the geometry + CameraRig settle the camera.
+  for (let i = 0; i < 4; i++) await nextFrame();
+
+  // Capture-only overrides (restored afterwards so the interactive studio is
+  // unaffected): brighter lighting for the dark regolith material, and a lower
+  // forward-tilted camera so more surface (and less sky) fills the frame.
+  const { gl, scene, camera } = await waitForRendererRefs();
+
+  // Strong capture lighting — the regolith albedo is very dark, so push hard.
+  const capSun = new THREE.DirectionalLight(0xfff2e0, 9.0);
+  capSun.position.set(4, 7, 3);
+  const capFill = new THREE.DirectionalLight(0xbcccff, 3.0);
+  capFill.position.set(-3, 2, -4);
+  const capAmb = new THREE.AmbientLight(0xffffff, 2.4);
+  scene.add(capSun, capFill, capAmb);
+
+  // Lift exposure too (renderer uses ACES tone mapping, so this is a global boost).
+  const prevExposure = gl.toneMappingExposure;
+  gl.toneMappingExposure = prevExposure * 2.6;
+
+  // Force the (patched) materials to recompile so the added lights take effect.
+  scene.traverse((obj) => {
+    const mat = (obj as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(mat)) mat.forEach((m) => (m.needsUpdate = true));
+    else if (mat) mat.needsUpdate = true;
+  });
+
+  // Let the live canvas render a couple frames so the shader recompiles with
+  // the new lights before we capture. Do this BEFORE moving the camera —
+  // OrbitControls.update() would otherwise clobber our reframe each frame.
+  for (let i = 0; i < 3; i++) await nextFrame();
+
+  const prevPos = camera.position.clone();
+  const prevQuat = camera.quaternion.clone();
+  // Higher + aimed slightly below centre → ~40° depression (vs the viewer's ~27°).
+  // Set immediately before the (synchronous) capture so no frame restores it.
+  camera.position.set(2.6, 3.0, 2.6);
+  camera.lookAt(0, -0.5, 0);
+  camera.updateMatrixWorld();
+
+  try {
+    return await exportImage(width, height, "jpg", 0.95, false);
+  } finally {
+    scene.remove(capSun, capFill, capAmb);
+    capSun.dispose();
+    capFill.dispose();
+    capAmb.dispose();
+    gl.toneMappingExposure = prevExposure;
+    camera.position.copy(prevPos);
+    camera.quaternion.copy(prevQuat);
+    camera.updateMatrixWorld();
+  }
+}
+
 export function installHeadlessApi() {
   (window as any).__rocktools = {
     store: useStudioStore,
@@ -254,8 +367,21 @@ export function installHeadlessApi() {
       return exportTerrainGLB(surfaceSeed, resolution, paramsOverride);
     },
 
+    async exportTerrainRuntimeGLB(surfaceSeed: number = 1, paramsOverride?: Record<string, number>): Promise<string> {
+      return exportTerrainRuntimeGLB(surfaceSeed, paramsOverride);
+    },
+
     getTerrainMeta(surfaceSeed: number = 1, paramsOverride?: Record<string, number>): string {
       return getTerrainMeta(surfaceSeed, paramsOverride);
+    },
+
+    async exportTerrainImage(
+      surfaceSeed: number = 1,
+      paramsOverride?: Record<string, number>,
+      width: number = 1080,
+      height: number = 1080,
+    ): Promise<string> {
+      return exportTerrainImage(surfaceSeed, paramsOverride, width, height);
     },
 
     async exportImage(

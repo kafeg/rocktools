@@ -46,6 +46,7 @@ interface Opts {
   captureOutput: string | null;
   terrain: boolean;
   surfaceSeeds: number[] | null;
+  terrainImage: boolean;
 }
 
 function parseArgs(): Opts {
@@ -54,7 +55,7 @@ function parseArgs(): Opts {
     config: "", output: "", resolution: 2048,
     serverUrl: null, staticDir: null, timeout: 720_000,
     chromiumPath: null, headful: false, runtime: false, materialOutput: null,
-    captureOutput: null, terrain: false, surfaceSeeds: null,
+    captureOutput: null, terrain: false, surfaceSeeds: null, terrainImage: true,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -71,6 +72,7 @@ function parseArgs(): Opts {
       case "--material-output": opts.materialOutput = argv[++i]!; break;
       case "--capture-output": opts.captureOutput = argv[++i]!; break;
       case "--terrain": opts.terrain = true; break;
+      case "--no-terrain-image": opts.terrainImage = false; break;
       case "--surface-seed":
         opts.surfaceSeeds = argv[++i]!.split(",").map((s) => parseInt(s.trim())).filter((n) => Number.isFinite(n));
         break;
@@ -84,6 +86,7 @@ function parseArgs(): Opts {
           "  --resolution <n>        Texture bake resolution (default: 1024)",
           "  --terrain               Export terrain patch(es) of the asteroid instead of the asteroid",
           "  --surface-seed <list>   Comma-separated terrain variant seeds (e.g. 1,2,3). With --terrain.",
+          "  --no-terrain-image      Skip the per-variant isometric terrain thumbnail (.jpg).",
           "  --server <url>          Use running studio server",
           "  --static-dir <dir>      Serve pre-built dist dir (Docker mode)",
           "  --chromium <path>       Chromium executable path",
@@ -347,10 +350,12 @@ async function main() {
       // the imported base) so variant settings never leak between iterations.
       for (const v of variants) {
         const override = { ...baseParams, ...(v.params ?? {}) };
-        console.error(`  Generating terrain (seed ${v.seed}, ${opts.resolution}px)...`);
+        console.error(`  Generating terrain (seed ${v.seed}, runtime shader)...`);
+        // Runtime GLB: keeps feature attributes + no baked albedo, so the game
+        // applies the same procedural shader + textures as the studio view.
         const b64: string = await page.evaluate(
-          (s: number, res: number, p: Record<string, number>) => (window as any).__rocktools.exportTerrainGLB(s, res, p),
-          v.seed, opts.resolution, override,
+          (s: number, p: Record<string, number>) => (window as any).__rocktools.exportTerrainRuntimeGLB(s, p),
+          v.seed, override,
         );
         const buf = Buffer.from(b64, "base64");
         const dest = multi ? `${base}_seed${v.seed}${ext}` : outputPath;
@@ -362,9 +367,28 @@ async function main() {
           (s: number, p: Record<string, number>) => (window as any).__rocktools.getTerrainMeta(s, p),
           v.seed, override,
         );
-        const metaPath = `${dest.slice(0, dest.length - path.extname(dest).length)}.meta.json`;
+        const destBase = dest.slice(0, dest.length - path.extname(dest).length);
+        const metaPath = `${destBase}.meta.json`;
         fs.writeFileSync(metaPath, metaJson + "\n");
         console.error(`  Meta:   ${metaPath}`);
+
+        // Isometric thumbnail — reuses the surface-view viewer + the same
+        // capture path as the asteroid screenshot. Non-fatal on failure.
+        if (opts.terrainImage) {
+          try {
+            console.error(`  Capturing terrain image (seed ${v.seed})...`);
+            const imgB64: string = await page.evaluate(
+              (s: number, p: Record<string, number>) => (window as any).__rocktools.exportTerrainImage(s, p),
+              v.seed, override,
+            );
+            const imgPath = `${destBase}.jpg`;
+            const imgBuf = Buffer.from(imgB64, "base64");
+            fs.writeFileSync(imgPath, imgBuf);
+            console.error(`  Image:  ${imgPath} (${(imgBuf.length / 1024).toFixed(0)} KB)`);
+          } catch (e: any) {
+            console.error(`  WARN: terrain image capture failed for seed ${v.seed}: ${e?.message ?? e}`);
+          }
+        }
       }
     } else {
       if (opts.runtime) {

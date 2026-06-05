@@ -758,6 +758,77 @@ export async function exportTerrainGLBToBuffer(
   return glb;
 }
 
+/**
+ * Runtime terrain GLB — the game-pipeline counterpart of exportTerrainGLBToBuffer.
+ *
+ * Unlike the baked export, this keeps the shader feature attributes (featureData/
+ * featureData2 → _FEATUREDATA/_FEATUREDATA2) and does NOT bake an albedo texture,
+ * so the game can apply the SAME procedural AsteroidMaterial + textures the studio
+ * surface view uses (full visual identity). Mirrors exportRuntimeGLBToBuffer for
+ * asteroids. The material in the GLB is just a placeholder the runtime overrides;
+ * what matters is the geometry + feature attributes + landing-pad extras.
+ */
+export async function exportTerrainRuntimeGLBToBuffer(
+  terrain: MeshData,
+  scatter: TerrainScatter | null,
+  shaderParams: CollectedShaderParams,
+  meta?: TerrainMeta | null,
+): Promise<ArrayBuffer> {
+  const group = new THREE.Group();
+  group.name = "terrain_patch";
+
+  if (meta) {
+    group.userData.rocktoolsTerrain = meta;
+    meta.landingPads.forEach((pad, i) => {
+      const marker = new THREE.Object3D();
+      marker.name = `landing_${i}`;
+      marker.position.set(pad.x, pad.y, pad.z);
+      marker.userData = { radius: pad.radius, slope: pad.slope };
+      group.add(marker);
+    });
+  }
+
+  // Heightfield — keep feature attributes, no bake/UV. Placeholder material only.
+  const terrainGeo = meshDataToGeometry(terrain, { center: false });
+  const terrainMat = new THREE.MeshStandardMaterial({
+    color: shaderParams.baseColor,
+    roughness: shaderParams.roughness,
+    metalness: shaderParams.metalness,
+  });
+  const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+  terrainMesh.name = "terrain";
+  group.add(terrainMesh);
+
+  // Rocks — merged geometry. Give them zero feature attributes so the SAME
+  // runtime shader renders them (matches the studio's RockInstances, which use
+  // AsteroidMaterial with empty featureData).
+  const rockGeo = scatter ? mergeScatterToGeometry(scatter) : null;
+  let rockMat: THREE.MeshStandardMaterial | null = null;
+  if (rockGeo) {
+    const vc = rockGeo.getAttribute("position").count;
+    rockGeo.setAttribute("featureData", new THREE.BufferAttribute(new Float32Array(vc * 4), 4));
+    rockGeo.setAttribute("featureData2", new THREE.BufferAttribute(new Float32Array(vc * 4), 4));
+    rockMat = new THREE.MeshStandardMaterial({
+      color: shaderParams.baseColor,
+      roughness: shaderParams.roughness,
+      metalness: shaderParams.metalness,
+    });
+    const rocks = new THREE.Mesh(rockGeo, rockMat);
+    rocks.name = "rocks";
+    group.add(rocks);
+  }
+
+  const exporter = new GLTFExporter();
+  const glb = (await exporter.parseAsync(group, { binary: true })) as ArrayBuffer;
+
+  terrainMat.dispose();
+  terrainGeo.dispose();
+  rockGeo?.dispose();
+  rockMat?.dispose();
+
+  return glb;
+}
+
 export async function exportTerrainGLB(
   terrain: MeshData,
   scatter: TerrainScatter | null,
