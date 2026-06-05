@@ -45,6 +45,12 @@ export interface TerrainParams {
   detailBoost: number;
   /** Mountain height multiplier (0 disables mountains). */
   mountainAmount: number;
+  /** Mountain fold frequency multiplier (lower = wider folds, higher = finer). */
+  mountainScale: number;
+  /** Mountain coverage [0..1]: low = a few localized ranges with flat gaps, high = blanket. */
+  mountainCoverage: number;
+  /** Fold sharpness [0..1]: 1 = crisp ridgelines, 0 = smooth rounded mass. */
+  foldSharpness: number;
   /** Inherited-fissure count multiplier (0 disables fissures). */
   fissureDensity: number;
   /** Inherited-ridge count multiplier (0 disables ridges). */
@@ -54,15 +60,18 @@ export interface TerrainParams {
 }
 
 export const DEFAULT_TERRAIN_PARAMS: TerrainParams = {
-  footprint: 20,
-  resolution: 768,
-  craterDensity: 1.5,
-  rockDensity: 1.5,
+  footprint: 40, // 2.0× reference tile
+  resolution: 1280,
+  craterDensity: 2,
+  rockDensity: 1,
   detailBoost: 4,
-  mountainAmount: 1.5,
+  mountainAmount: 1,
+  mountainScale: 1,
+  mountainCoverage: 0.4,
+  foldSharpness: 0.5,
   fissureDensity: 0.25,
   ridgeDensity: 0.25,
-  erosion: 0.4,
+  erosion: 0.3,
 };
 
 export interface TerrainResult {
@@ -93,15 +102,27 @@ export function generateTerrain(
   const res = Math.max(16, Math.round(params.resolution));
   const field = createField(res, params.footprint);
 
+  // ── "Tiling" model ────────────────────────────────────────────────
+  // As the footprint grows past the reference tile size, keep each feature's
+  // ABSOLUTE size / height / wavelength constant and instead add MORE features
+  // (count ∝ area). So a 2× footprint reads as 4 reference tiles stitched into a
+  // square — not a zoomed-out view with bloated craters/ridges. `sizeAnchor`
+  // cancels the footprint factor inside the layer fns so fractions map to a
+  // constant absolute size; `area` multiplies the counts.
+  const REF = 20;
+  const tile = params.footprint / REF;
+  const area = tile * tile;
+  const sizeAnchor = 1 / tile;
+
   // ── Base rolling terrain ──────────────────────────────────────────
   applyBaseFbm(
     field,
     {
-      amplitude: style.base.amplitudeFrac * params.footprint,
+      amplitude: style.base.amplitudeFrac * REF,
       octaves: style.base.octaves,
       lacunarity: style.base.lacunarity,
       persistence: style.base.persistence,
-      frequency: style.base.frequency,
+      frequency: style.base.frequency * tile, // constant wavelength across tiles
       warp: style.base.warp,
     },
     seed(LAYER.BASE),
@@ -112,36 +133,50 @@ export function generateTerrain(
     applyMountains(
       field,
       {
-        height: style.mountains.heightFrac * params.footprint * params.mountainAmount,
-        frequency: style.mountains.frequency,
+        height: style.mountains.heightFrac * REF * params.mountainAmount,
+        frequency: style.mountains.frequency * tile * params.mountainScale,
         octaves: style.mountains.octaves,
-        regions: style.mountains.regions,
+        // Region count grows with √area (not area) and Coverage, so big patches
+        // get more ranges but keep flat gaps between them (instead of a blanket).
+        regions: Math.max(1, Math.round(style.mountains.regions * Math.sqrt(area) * params.mountainCoverage * 2.2)),
+        sharpness: params.foldSharpness,
       },
       seed(LAYER.MOUNTAINS),
     );
   }
 
-  // ── Craters (count amplified by density + detail boost) ───────────
+  // ── Craters (count ∝ area, sizes anchored to the reference tile) ──
   if (style.craters) {
     const craters: CraterLayerParams = {
       ...style.craters,
-      count: Math.round(style.craters.count * params.craterDensity * params.detailBoost),
+      count: Math.round(style.craters.count * params.craterDensity * params.detailBoost * area),
       // Extend the size range downward to add fine craters on zoom-in.
-      minSize: style.craters.minSize / Math.max(1, params.detailBoost),
+      minSize: (style.craters.minSize / Math.max(1, params.detailBoost)) * sizeAnchor,
+      maxSize: style.craters.maxSize * sizeAnchor,
     };
     applyCraters(field, craters, seed(LAYER.CRATERS));
   }
 
-  // ── Ridges (count scaled by ridgeDensity; 0 disables) ─────────────
+  // ── Ridges (count scaled by ridgeDensity × area; 0 disables) ──────
   if (style.ridges && params.ridgeDensity > 0) {
-    const count = Math.max(0, Math.round(style.ridges.count * params.ridgeDensity));
-    if (count > 0) applyLines(field, { ...style.ridges, count }, seed(LAYER.RIDGES));
+    const count = Math.max(0, Math.round(style.ridges.count * params.ridgeDensity * area));
+    if (count > 0) applyLines(field, {
+      ...style.ridges, count,
+      amount: style.ridges.amount * sizeAnchor,
+      width: style.ridges.width * sizeAnchor,
+      length: style.ridges.length * sizeAnchor,
+    }, seed(LAYER.RIDGES));
   }
 
-  // ── Fissures (count scaled by fissureDensity; 0 disables) ─────────
+  // ── Fissures (count scaled by fissureDensity × area; 0 disables) ──
   if (style.fissures && params.fissureDensity > 0) {
-    const count = Math.max(0, Math.round(style.fissures.count * params.fissureDensity));
-    if (count > 0) applyLines(field, { ...style.fissures, count }, seed(LAYER.FISSURES));
+    const count = Math.max(0, Math.round(style.fissures.count * params.fissureDensity * area));
+    if (count > 0) applyLines(field, {
+      ...style.fissures, count,
+      amount: style.fissures.amount * sizeAnchor,
+      width: style.fissures.width * sizeAnchor,
+      length: style.fissures.length * sizeAnchor,
+    }, seed(LAYER.FISSURES));
   }
 
   // ── Thermal erosion (after all relief is laid down) ───────────────
@@ -162,10 +197,11 @@ export function generateTerrain(
       field,
       style.rocks,
       {
-        count: Math.round(style.rocks.count * params.rockDensity * params.detailBoost),
-        // Rocks are small relative to the patch (this is a zoomed-in view).
-        minSize: style.rocks.minSize * 0.4,
-        maxSize: style.rocks.maxSize * 0.4,
+        count: Math.round(style.rocks.count * params.rockDensity * params.detailBoost * area),
+        // Rocks are small relative to the patch; sizes anchored to the tile so
+        // they stay the same absolute size as the footprint grows.
+        minSize: style.rocks.minSize * 0.4 * sizeAnchor,
+        maxSize: style.rocks.maxSize * 0.4 * sizeAnchor,
         embed: 0.3,
       },
       seed(LAYER.ROCKS),

@@ -100,6 +100,8 @@ export interface MountainLayerParams {
   octaves: number;
   /** Number of distinct mountain regions; the rest of the patch stays flat. */
   regions: number;
+  /** Ridged-vs-billow blend [0..1]: 1 = sharp ridgelines, 0 = smooth rounded mass. */
+  sharpness: number;
 }
 
 export function applyMountains(field: TerrainField, p: MountainLayerParams, seed: number): void {
@@ -147,9 +149,10 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
       // Rounded ridgelines: pow<1 broadens crests so they aren't razor-sharp.
       const rid = Math.pow(ridged(nRidge, x + wx, z + wy, ridgeOpts), 0.75);
       const billow = fbm(nBillow, x + wx, z + wy, billowOpts) * 0.5 + 0.5; // [0,1]
-      // Mostly ridgelines, with billow filling the valleys so it reads as a
-      // massif rather than isolated spikes. smoothstep(mask) eases the onset.
-      const hN = 0.6 * rid + 0.4 * billow;
+      // Blend ridgelines with billow. sharpness=1 → crisp ridges, 0 → rounded
+      // mass; billow filling the valleys keeps it a massif, not isolated spikes.
+      const sw = Math.min(1, Math.max(0, p.sharpness));
+      const hN = sw * rid + (1 - sw) * billow;
       heights[j * res + i] += hN * p.height * (mask * (3 - 2 * mask) * mask);
     }
   }

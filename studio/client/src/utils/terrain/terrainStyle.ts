@@ -97,12 +97,17 @@ export function deriveTerrainStyle(
     regions: 3,
   };
 
+  // Crater radii are fractions of the footprint; the asteroid's fractions are
+  // huge on a large patch (maxSize 0.25 → a crater spanning half the tile), so
+  // scale them down — same reasoning as ridges/fissures. Depth/rim stay relative
+  // to each crater's own radius, so smaller craters get proportionally shallower.
+  const CRATER_SIZE = 0.3;
   const craterStep = findStep(steps, "mesh:craters");
   const craters: CraterLayerParams | null = craterStep
     ? {
         count: Math.max(0, Math.round(num(craterStep.params.count, 12))),
-        minSize: num(craterStep.params.minSize, 0.03),
-        maxSize: num(craterStep.params.maxSize, 0.25),
+        minSize: num(craterStep.params.minSize, 0.03) * CRATER_SIZE,
+        maxSize: num(craterStep.params.maxSize, 0.25) * CRATER_SIZE,
         depthRatio: num(craterStep.params.depthRatio, 0.25),
         rimHeight: num(craterStep.params.rimHeight, 0.06),
         sizeExponent: num(craterStep.params.sizeExponent, 1.8),

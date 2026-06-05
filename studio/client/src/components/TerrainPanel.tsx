@@ -216,9 +216,9 @@ export default function TerrainPanel() {
         {/* Size & detail */}
         <div className="space-y-2.5">
           <div className="text-[10px] uppercase tracking-wider text-space-dim">Size &amp; Detail</div>
-          <Slider label="Footprint" value={params.footprint} min={1} max={20} step={0.5}
-            onChange={(v) => setParam("footprint", v)} fmt={(v) => v.toFixed(1)} />
-          <Slider label="Resolution" value={params.resolution} min={64} max={768} step={32}
+          <Slider label="Footprint" value={params.footprint} min={1} max={80} step={1}
+            onChange={(v) => setParam("footprint", v)} fmt={(v) => `${v.toFixed(0)} (${(v / 20).toFixed(1)}× tile)`} />
+          <Slider label="Resolution" value={params.resolution} min={64} max={1280} step={64}
             onChange={(v) => setParam("resolution", v)} fmt={(v) => `${v}²`} />
           <Slider label="Detail boost" value={params.detailBoost} min={0.5} max={4} step={0.25}
             onChange={(v) => setParam("detailBoost", v)} fmt={(v) => `${v}×`} />
@@ -234,6 +234,16 @@ export default function TerrainPanel() {
           </div>
           <Slider label="Mountains" value={params.mountainAmount} min={0} max={2} step={0.1}
             onChange={(v) => setParam("mountainAmount", v)} fmt={(v) => `${v.toFixed(1)}×`} />
+          {params.mountainAmount > 0 && (
+            <>
+              <Slider label="• Fold scale" value={params.mountainScale} min={0.4} max={2.5} step={0.1}
+                onChange={(v) => setParam("mountainScale", v)} fmt={(v) => `${v.toFixed(1)}×`} />
+              <Slider label="• Coverage" value={params.mountainCoverage} min={0} max={1} step={0.05}
+                onChange={(v) => setParam("mountainCoverage", v)} fmt={(v) => v.toFixed(2)} />
+              <Slider label="• Fold sharpness" value={params.foldSharpness} min={0} max={1} step={0.05}
+                onChange={(v) => setParam("foldSharpness", v)} fmt={(v) => v.toFixed(2)} />
+            </>
+          )}
           {style.craters && (
             <Slider label="Craters" value={params.craterDensity} min={0} max={4} step={0.25}
               onChange={(v) => setParam("craterDensity", v)} fmt={(v) => `${v}×`} />

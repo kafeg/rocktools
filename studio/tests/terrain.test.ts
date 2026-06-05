@@ -21,12 +21,17 @@ const STYLE: TerrainStyle = {
 };
 
 const PARAMS: TerrainParams = {
-  footprint: 4,
+  // Use the reference tile size so feature counts (which scale with area) are
+  // present; a sub-reference footprint intentionally yields very few features.
+  footprint: 20,
   resolution: 48,
   craterDensity: 1,
   rockDensity: 2,
   detailBoost: 1,
   mountainAmount: 1,
+  mountainScale: 1,
+  mountainCoverage: 0.5,
+  foldSharpness: 0.6,
   fissureDensity: 1,
   ridgeDensity: 1,
   erosion: 0.4,
