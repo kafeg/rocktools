@@ -113,14 +113,18 @@ describe("terrain metadata", () => {
     expect(JSON.stringify(a.meta)).toBe(JSON.stringify(b.meta));
     expect(a.meta.stats.flatFraction).toBeGreaterThanOrEqual(0);
     expect(a.meta.stats.flatFraction).toBeLessThanOrEqual(1);
-    // Landing pads sit inside the footprint and are sorted flattest-first.
+    // Landing pads sit inside the footprint and are genuinely flat AREAS.
+    // Ordering is by the composite planarity score (area RMS + mean slope +
+    // centrality), NOT raw point slope — a ridge crest has near-zero point
+    // slope, which is exactly what the area metric exists to reject — so pad
+    // slopes are individually sane but not monotonic.
     for (const pad of a.meta.landingPads) {
       expect(Math.abs(pad.x)).toBeLessThanOrEqual(PARAMS.footprint / 2);
       expect(Math.abs(pad.z)).toBeLessThanOrEqual(PARAMS.footprint / 2);
+      expect(pad.slope).toBeLessThan(0.25);
+      expect(pad.radius).toBeGreaterThan(0);
     }
-    for (let i = 1; i < a.meta.landingPads.length; i++) {
-      expect(a.meta.landingPads[i]!.slope).toBeGreaterThanOrEqual(a.meta.landingPads[i - 1]!.slope);
-    }
+    expect(a.meta.landingPads.length).toBeGreaterThan(0);
   });
 });
 

@@ -96,7 +96,36 @@ export function computeTerrainMeta(
     }
   }
 
-  interface Cand { x: number; z: number; slope: number; }
+  // Neighborhood planarity over the pad AREA (sparse ring sampling): mean slope +
+  // RMS height deviation from the area mean. A ridge crest or inflection has a
+  // near-ZERO point gradient (the old single-point metric parked landers exactly
+  // there) but a large area deviation — this is what actually rejects crests.
+  const cellSize = size / (res - 1);
+  const areaStats = (fi: number, fj: number): { meanSlope: number; rms: number } => {
+    const rCells = Math.max(2, Math.round(padRadius / cellSize));
+    const clampI = (v: number) => Math.min(res - 1, Math.max(0, v));
+    const pts: Array<[number, number]> = [[fi, fj]];
+    for (const rr of [0.5, 1]) {
+      for (let k = 0; k < 6; k++) {
+        const a = (Math.PI / 3) * k + (rr === 1 ? Math.PI / 6 : 0);
+        pts.push([
+          clampI(Math.round(fi + Math.cos(a) * rCells * rr)),
+          clampI(Math.round(fj + Math.sin(a) * rCells * rr)),
+        ]);
+      }
+    }
+    let slopeSum = 0;
+    const hs: number[] = [];
+    for (const [pi, pj] of pts) {
+      slopeSum += slopeAt(field, pi, pj);
+      hs.push(heights[pj * res + pi]!);
+    }
+    const mean = hs.reduce((s, v) => s + v, 0) / hs.length;
+    const rms = Math.sqrt(hs.reduce((s, v) => s + (v - mean) ** 2, 0) / hs.length);
+    return { meanSlope: slopeSum / pts.length, rms };
+  };
+
+  interface Cand { x: number; z: number; slope: number; score: number; }
   const collectCandidates = (respectRocks: boolean): Cand[] => {
     const out: Cand[] = [];
     for (let gj = 0; gj < G; gj++) {
@@ -105,10 +134,18 @@ export function computeTerrainMeta(
         const fi = Math.round((gi / (G - 1)) * (res - 1));
         const fj = Math.round((gj / (G - 1)) * (res - 1));
         const s = slopeAt(field, fi, fj);
-        if (s < flatThresh) out.push({ x: coord(fi), z: coord(fj), slope: s });
+        if (s >= flatThresh) continue;
+        const { meanSlope, rms } = areaStats(fi, fj);
+        const x = coord(fi), z = coord(fj);
+        // Normalized deviation (rms per pad radius ≈ tangent of the area tilt) +
+        // mean slope dominate; mild centrality preference breaks ties so the
+        // best pads gravitate to the middle of the patch, not its corners.
+        const centrality = Math.hypot(x, z) / size;
+        const score = (rms / padRadius) * 3 + meanSlope * 2 + centrality * 0.15;
+        out.push({ x, z, slope: meanSlope, score });
       }
     }
-    out.sort((a, b) => a.slope - b.slope);
+    out.sort((a, b) => a.score - b.score);
     return out;
   };
 
