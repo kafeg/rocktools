@@ -89,6 +89,7 @@ const LAYER = {
   RIDGES: 4,
   FISSURES: 5,
   ROCKS: 6,
+  REGIONAL: 7,
 } as const;
 
 export function generateTerrain(
@@ -114,7 +115,36 @@ export function generateTerrain(
   const area = tile * tile;
   const sizeAnchor = 1 / tile;
 
-  // ── Base rolling terrain ──────────────────────────────────────────
+  // ── Regional relief (large-scale STRUCTURE, wavelength ∝ footprint) ──
+  // The tiling model below keeps every feature's ABSOLUTE wavelength constant, so
+  // a wide patch fills with uniform all-over ripple and loses any sense of place.
+  // This pass adds a FEW big undulations across the WHOLE patch (frequency is NOT
+  // ×tile), so the surface reads as distinct REGIONS — high plateaus, low basins
+  // and open plains — which the mountains/craters then decorate. Amplitude scales
+  // with footprint so a small tile gets a single gentle swell, a wide one several.
+  applyBaseFbm(
+    field,
+    {
+      // BROAD + gentle: a couple of big undulations define a high PLATEAU here, a
+      // low BASIN there, with wide near-level tops/floors — the large-scale sense
+      // of place. Kept low-amplitude & low-frequency so it does NOT turn the whole
+      // patch into rolling hills (that erased the flat ground); the roughness mask
+      // on the detail pass below is what actually keeps plains flat.
+      amplitude: params.footprint * 0.03,
+      octaves: 2,
+      lacunarity: 2.2,
+      persistence: 0.5,
+      frequency: 1.7,
+      warp: 0.45,
+    },
+    seed(LAYER.REGIONAL),
+  );
+
+  // ── Base rolling terrain (roughness-MASKED) ───────────────────────
+  // The fine detail is gated by a low-frequency mask: it drops to ZERO across
+  // whole regions (genuinely FLAT plains) and rises to full elsewhere (broken,
+  // rough ground) — restoring the "flat here, rough there" contrast a uniform
+  // blanket of bumps had destroyed on wide patches.
   applyBaseFbm(
     field,
     {
@@ -124,6 +154,7 @@ export function generateTerrain(
       persistence: style.base.persistence,
       frequency: style.base.frequency * tile, // constant wavelength across tiles
       warp: style.base.warp,
+      roughMaskFreq: 2.6,
     },
     seed(LAYER.BASE),
   );
@@ -133,33 +164,45 @@ export function generateTerrain(
     applyMountains(
       field,
       {
-        height: style.mountains.heightFrac * REF * params.mountainAmount,
+        // Peak height scales with the FOOTPRINT (heightFrac is authored as a
+        // fraction of the patch), NOT the reference tile — so a wide patch grows
+        // genuinely TALL ridges (tens of metres) instead of the same ~10 m bump
+        // stretched thin into a gentle hill. This is what brings back the dramatic
+        // massifs the small tiles had; K keeps the tallest around ~25-30% of width.
+        height: style.mountains.heightFrac * params.footprint * params.mountainAmount * 0.24,
         frequency: style.mountains.frequency * tile * params.mountainScale,
         octaves: style.mountains.octaves,
-        // Region count grows with √area (not area) and Coverage, so big patches
-        // get more ranges but keep flat gaps between them (instead of a blanket).
-        regions: Math.max(1, Math.round(style.mountains.regions * Math.sqrt(area) * params.mountainCoverage * 2.2)),
+        // 1-3 big massifs — count does NOT grow with area (that carpeted wide
+        // patches with dozens of little bumps); a handful of large ranges ringing
+        // the open centre reads as "mountains HERE, plain THERE".
+        regions: Math.min(3, Math.max(1, Math.round(style.mountains.regions * params.mountainCoverage * 2.5))),
         sharpness: params.foldSharpness,
       },
       seed(LAYER.MOUNTAINS),
     );
   }
 
-  // ── Craters (count ∝ area, sizes anchored to the reference tile) ──
+  // ── Craters (meteorite impacts: MIXED sizes, count ∝ √area) ──────
   if (style.craters) {
     const craters: CraterLayerParams = {
       ...style.craters,
-      count: Math.round(style.craters.count * params.craterDensity * params.detailBoost * area),
-      // Extend the size range downward to add fine craters on zoom-in.
+      // Count grows with √area (not area) so a wide patch reads as a scattered
+      // impact field, not a carpet of pits; density/detailBoost still tune it.
+      count: Math.round(style.craters.count * params.craterDensity * params.detailBoost * Math.sqrt(area) * 1.6),
+      // Small craters stay tile-anchored (fine detail); BIG ones scale with the
+      // FOOTPRINT (no anchor) so real basin-class impacts appear on a wide patch.
+      // sizeExponent (style) keeps most small with a few large — a natural field.
       minSize: (style.craters.minSize / Math.max(1, params.detailBoost)) * sizeAnchor,
-      maxSize: style.craters.maxSize * sizeAnchor,
+      maxSize: style.craters.maxSize * 2.4,
     };
     applyCraters(field, craters, seed(LAYER.CRATERS));
   }
 
-  // ── Ridges (count scaled by ridgeDensity × area; 0 disables) ──────
+  // ── Ridges (FEW linear features: count ∝ √area, not area) ─────────
+  // Streak lines multiplied out of control at ∝ area — a wide patch was webbed
+  // with them. √area keeps them as occasional accents, not an all-over network.
   if (style.ridges && params.ridgeDensity > 0) {
-    const count = Math.max(0, Math.round(style.ridges.count * params.ridgeDensity * area));
+    const count = Math.max(0, Math.round(style.ridges.count * params.ridgeDensity * Math.sqrt(area)));
     if (count > 0) applyLines(field, {
       ...style.ridges, count,
       amount: style.ridges.amount * sizeAnchor,
@@ -168,14 +211,17 @@ export function generateTerrain(
     }, seed(LAYER.RIDGES));
   }
 
-  // ── Fissures (count scaled by fissureDensity × area; 0 disables) ──
+  // ── Fissures → shallow grooves (rare; NO deep canyons) ────────────
+  // Deep "canyon" trenches read badly, so density is near-zero in the variants and
+  // the depth multiplier is modest — any survivor is a shallow hairline groove, at
+  // most one on a patch, not a map-splitting rift.
   if (style.fissures && params.fissureDensity > 0) {
-    const count = Math.max(0, Math.round(style.fissures.count * params.fissureDensity * area));
+    const count = Math.max(0, Math.round(style.fissures.count * params.fissureDensity * Math.sqrt(area)));
     if (count > 0) applyLines(field, {
       ...style.fissures, count,
-      amount: style.fissures.amount * sizeAnchor,
-      width: style.fissures.width * sizeAnchor,
-      length: style.fissures.length * sizeAnchor,
+      amount: style.fissures.amount * 2.0,
+      width: style.fissures.width * 1.5,
+      length: style.fissures.length * 1.2,
     }, seed(LAYER.FISSURES));
   }
 
@@ -198,10 +244,12 @@ export function generateTerrain(
       style.rocks,
       {
         count: Math.round(style.rocks.count * params.rockDensity * params.detailBoost * area),
-        // Rocks are small relative to the patch; sizes anchored to the tile so
-        // they stay the same absolute size as the footprint grows.
-        minSize: style.rocks.minSize * 0.4 * sizeAnchor,
-        maxSize: style.rocks.maxSize * 0.4 * sizeAnchor,
+        // WIDE size range — from small pebbles up to metre+ boulders — so the
+        // scatter reads varied, not a uniform gravel. Anchored to the tile (stable
+        // absolute sizes as the footprint grows); the power-law in scatterRocks
+        // keeps most small with a scattering of big ones.
+        minSize: style.rocks.minSize * 0.15 * sizeAnchor,
+        maxSize: style.rocks.maxSize * 3.2 * sizeAnchor,
         embed: 0.3,
       },
       seed(LAYER.ROCKS),

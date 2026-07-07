@@ -21,6 +21,8 @@ export interface AsteroidShaderUniforms {
   uVeinIntensity: { value: number };
   uVeinScale: { value: number };
   uVeinColor: { value: THREE.Color };
+  /** 1 ⇒ veins run through the WHOLE volume (scattered boulders), not fissure-gated. */
+  uRockVeins: { value: number };
   uSubsurface: { value: number };
   uFeatureIntensity: { value: number };
   uCraterShading: { value: number };
@@ -177,6 +179,7 @@ uniform vec3 uDustColor;
 uniform float uVeinIntensity;
 uniform float uVeinScale;
 uniform vec3 uVeinColor;
+uniform float uRockVeins;
 uniform float uSubsurface;
 uniform float uFeatureIntensity;
 uniform float uCraterShading;
@@ -280,6 +283,20 @@ if (uFeatureIntensity > 0.01) {
   if (layerEdge > 0.01 && uLayerShading > 0.01) {
     vec3 grad = normalize(uObjectToViewNormalMatrix * snoiseGrad(perturbPos * 40.0));
     normal = normalize(normal + grad * layerEdge * 0.025 * fi * uLayerShading * ns);
+  }
+}
+// NEAR-FIELD REGOLITH GRAIN (terrain patches): two octaves of high-frequency
+// procedural normal ripple — reads as packed sand/gravel instead of a smooth
+// blur when the camera is metres away. Fades out with view distance so the
+// far field keeps the clean macro shading (no shimmer). View units are metres
+// in the surface/factory canvases; the AU main scene only shows the patch at
+// close-up swap range, where full grain is exactly what we want.
+if (uTerrainFlatMode > 0.5) {
+  float grainFade = 1.0 - smoothstep(6.0, 22.0, length(vViewPosition));
+  if (grainFade > 0.01) {
+    vec3 g1 = normalize(uObjectToViewNormalMatrix * snoiseGrad(vObjPosition * 260.0));
+    vec3 g2 = normalize(uObjectToViewNormalMatrix * snoiseGrad(vObjPosition * 940.0));
+    normal = normalize(normal + (g1 * 0.55 + g2 * 0.45) * 0.10 * grainFade);
   }
 }
 `;
@@ -512,7 +529,36 @@ const FRAG_COLOR = /* glsl */ `
     finalColor = mix(finalColor, finalColor * vec3(0.9, 0.93, 1.0), steep * 0.5);
     float tone = snoise(vObjPosition * 1.5) * 0.07;
     finalColor *= (1.0 + tone);
+
+    // Near-field sand speckle + sparse mineral glints — the albedo half of the
+    // regolith grain (the normal half lives in NORMAL_PERTURBATION). Same view
+    // distance fade so the far field stays clean.
+    float sandFade = 1.0 - smoothstep(6.0, 22.0, length(vViewPosition));
+    if (sandFade > 0.01) {
+      float speckle = snoise(vObjPosition * 430.0) * 0.05 + snoise(vObjPosition * 1450.0) * 0.04;
+      float glint = smoothstep(0.8, 0.96, snoise(vObjPosition * 2300.0)) * 0.22;
+      finalColor *= 1.0 + (speckle + glint) * sandFade;
+    }
   }
+
+  // ROCK VEINS: mineral veining through the WHOLE volume — the scattered-boulder
+  // material path (the fissure-gated veins above only run inside cracks). The
+  // pattern lives in the rock template's object space (stable on the rock;
+  // instances differ by rotation/scale and their per-instance tint).
+  if (uRockVeins > 0.5 && uVeinIntensity > 0.01) {
+    float rv1 = snoise(vObjPosition * uVeinScale * 2.0);
+    float rv2 = snoise(vObjPosition * uVeinScale * 4.5 + vec3(3.7));
+    float rvein = pow(1.0 - smoothstep(0.12, 0.4, abs(rv1)), 2.5);
+    float rveinFine = pow(1.0 - smoothstep(0.18, 0.45, abs(rv2)), 3.0) * 0.5;
+    finalColor = mix(finalColor, uVeinColor, clamp((rvein + rveinFine) * uVeinIntensity, 0.0, 0.85));
+  }
+
+  // Per-instance tint (scattered rocks): three's color_fragment multiplied
+  // diffuseColor by the instance color BEFORE this block, and the assignment
+  // below would overwrite it — re-apply the tint to the procedural albedo.
+  #ifdef USE_INSTANCING_COLOR
+    finalColor *= vColor;
+  #endif
 
   diffuseColor.rgb = finalColor;
 `;
@@ -595,6 +641,7 @@ export function createAsteroidShaderUniforms(): AsteroidShaderUniforms {
     uVeinIntensity: { value: 0 },
     uVeinScale: { value: 3 },
     uVeinColor: { value: new THREE.Color() },
+    uRockVeins: { value: 0 },
     uSubsurface: { value: 0 },
     uFeatureIntensity: { value: 0 },
     uCraterShading: { value: 1 },

@@ -77,7 +77,10 @@ export function scatterRocks(
         const flatness = Math.max(0, ny); // 1 = flat, →0 = steep
         if (rand() > Math.pow(flatness, flatBias)) continue;
       }
-      const scale = (params.minSize + (params.maxSize - params.minSize) * u * u) * size * sizeMul;
+      // Cubic bias (u³) toward minSize: with a WIDE min→max range this keeps the
+      // field mostly small pebbles with only an occasional large boulder, instead
+      // of a uniform spread of big rocks.
+      const scale = (params.minSize + (params.maxSize - params.minSize) * u * u * u) * size * sizeMul;
       const baseY = sampleHeight(field, x, z);
       instances.push({
         x,

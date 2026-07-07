@@ -67,6 +67,14 @@ export interface BaseLayerParams {
   frequency: number;
   /** Domain-warp strength (0 = none). */
   warp: number;
+  /**
+   * Optional ROUGHNESS MASK frequency (cycles across the patch). When set, a
+   * low-frequency noise spatially modulates this layer's amplitude: some regions
+   * fall to ZERO (genuinely FLAT plains), others keep full detail (rough ground) —
+   * so a wide patch reads as "flat here, broken there" instead of a uniform blanket
+   * of bumps. Only meaningful for the fine detail pass, not the regional swell.
+   */
+  roughMaskFreq?: number;
 }
 
 export function applyBaseFbm(field: TerrainField, p: BaseLayerParams, seed: number): void {
@@ -80,12 +88,23 @@ export function applyBaseFbm(field: TerrainField, p: BaseLayerParams, seed: numb
     frequency: p.frequency / field.size,
   };
   const { res, size, heights } = field;
+  const nMask = p.roughMaskFreq ? makeNoise2D(seed ^ 0x517cc1b7) : null;
+  const maskOpts: FbmOptions | null = p.roughMaskFreq
+    ? { octaves: 2, lacunarity: 2, persistence: 0.5, frequency: p.roughMaskFreq / size }
+    : null;
   for (let j = 0; j < res; j++) {
     const z = coord(j, res, size);
     for (let i = 0; i < res; i++) {
       const x = coord(i, res, size);
       const v = warpedFbm(nBase, nWx, nWy, x, z, opts, p.warp);
-      heights[j * res + i] += v * p.amplitude;
+      let amp = p.amplitude;
+      if (nMask && maskOpts) {
+        // fbm ∈ [-1,1] → [0,1]; below 0.42 the plain is FLAT, above 0.72 fully
+        // rough, smooth transition between → soft-edged rough patches on flat ground.
+        const m = fbm(nMask, x, z, maskOpts) * 0.5 + 0.5;
+        amp *= smoothstep(0.42, 0.72, m);
+      }
+      heights[j * res + i] += v * amp;
     }
   }
 }
@@ -125,10 +144,18 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
   const regionCount = Math.max(1, Math.round(p.regions));
   const centers: Array<{ cx: number; cz: number; radius: number }> = [];
   for (let k = 0; k < regionCount; k++) {
+    // Place massifs on an ANNULUS around the patch centre (dist 0.28-0.5 of the
+    // half-size) so the central ground stays open for a base while ranges ring it
+    // — you see mountains when you look outward, plain where you set down.
+    const ang = rand() * Math.PI * 2 + (k / regionCount) * Math.PI * 2;
+    const dist = size * (0.28 + rand() * 0.22);
     centers.push({
-      cx: (rand() - 0.5) * size * 0.9,
-      cz: (rand() - 0.5) * size * 0.9,
-      radius: size * (0.14 + rand() * 0.2),
+      cx: Math.cos(ang) * dist,
+      cz: Math.sin(ang) * dist,
+      // LARGE massifs (radius ~0.18-0.4 of the patch) — a mountainous region
+      // takes up a real chunk of the map, with many interwoven ridge lines across
+      // it, rather than a small isolated bump.
+      radius: size * (0.18 + rand() * 0.22),
     });
   }
 

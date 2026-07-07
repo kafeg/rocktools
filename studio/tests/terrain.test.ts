@@ -114,15 +114,18 @@ describe("terrain metadata", () => {
     expect(a.meta.stats.flatFraction).toBeGreaterThanOrEqual(0);
     expect(a.meta.stats.flatFraction).toBeLessThanOrEqual(1);
     // Landing pads sit inside the footprint and are genuinely flat AREAS.
-    // Ordering is by the composite planarity score (area RMS + mean slope +
-    // centrality), NOT raw point slope — a ridge crest has near-zero point
-    // slope, which is exactly what the area metric exists to reject — so pad
-    // slopes are individually sane but not monotonic.
+    // Ordering is by the composite planarity score — a fitted-plane TILT, its
+    // residual RMS + max|residual| (a single ridge crossing the window), and
+    // PROMINENCE off the patch median (a flat hilltop/pit) — NOT raw point
+    // slope, so pad `slope` (= plane tilt) is individually sane but not monotonic.
     for (const pad of a.meta.landingPads) {
       expect(Math.abs(pad.x)).toBeLessThanOrEqual(PARAMS.footprint / 2);
       expect(Math.abs(pad.z)).toBeLessThanOrEqual(PARAMS.footprint / 2);
       expect(pad.slope).toBeLessThan(0.25);
       expect(pad.radius).toBeGreaterThan(0);
+      // New window metrics are populated and finite.
+      expect(Number.isFinite(pad.roughness ?? 0)).toBe(true);
+      expect(Number.isFinite(pad.prominence ?? 0)).toBe(true);
     }
     expect(a.meta.landingPads.length).toBeGreaterThan(0);
   });

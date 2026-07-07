@@ -19,8 +19,14 @@ export interface LandingPad {
   z: number;
   /** Clear, flat radius in local units. */
   radius: number;
-  /** Mean slope (0 = flat, 1 = vertical) inside the pad. */
+  /** Base-camp area TILT (plane-fit gradient magnitude, 0 = level). */
   slope: number;
+  /** Max |residual| off the fitted plane inside the camp window (local units) — a
+   *  single ridge crossing the window shows here even when RMS smooths it out. */
+  roughness?: number;
+  /** Mean height of the camp window MINUS the patch median (local units) — a flat
+   *  hilltop or pit bottom is "locally perfect" but globally wrong. */
+  prominence?: number;
 }
 
 export interface TerrainMeta {
@@ -96,36 +102,88 @@ export function computeTerrainMeta(
     }
   }
 
-  // Neighborhood planarity over the pad AREA (sparse ring sampling): mean slope +
-  // RMS height deviation from the area mean. A ridge crest or inflection has a
-  // near-ZERO point gradient (the old single-point metric parked landers exactly
-  // there) but a large area deviation — this is what actually rejects crests.
+  // ── BASE-CAMP WINDOW EVALUATION ──────────────────────────────────────
+  // A pad is judged not by a single point but by a WINDOW the size of the rig
+  // grid that will surround it (~the whole buildable footprint, "or slightly
+  // more"), via a fitted INCLINED PLANE. Three failure modes the old mean/RMS
+  // metric conflated are separated and each penalized independently:
+  //   tilt       — the window is a smooth SLOPE (locally "flat" but inclined);
+  //   maxAbs     — a RIDGE/gully crosses the window (RMS averages a single crest
+  //                into mild noise; the max residual off the plane does not);
+  //   prominence — a flat HILLTOP or pit: locally perfect, but its mean height
+  //                stands off the PATCH MEDIAN. This is the "flat relative to the
+  //                WHOLE surface, not to whatever slope it sits on" normalization
+  //                the design calls for — it is what rejects landing a base on the
+  //                one isolated mountain whose summit happens to be level.
   const cellSize = size / (res - 1);
-  const areaStats = (fi: number, fj: number): { meanSlope: number; rms: number } => {
-    const rCells = Math.max(2, Math.round(padRadius / cellSize));
+  // Window radius ≈ the consumer's rig-grid RADIUS (~22 m) plus margin — a pad is
+  // judged over the area the BASE actually occupies, not the whole patch. Capped
+  // at 40 m so a wide (250-350 m) patch doesn't judge flatness over a 90 m+ window
+  // (which would reject good central spots for distant relief the base never sees).
+  const evalR = Math.min(40, Math.max(24, size * 0.35));
+  const rCells = Math.max(4, Math.round(evalR / cellSize));
+
+  // Patch median height — the "whole surface" reference for prominence. A robust
+  // level line for the entire patch, sampled coarsely (every 8th cell).
+  const hSample: number[] = [];
+  for (let j = 0; j < res; j += 8) {
+    for (let i = 0; i < res; i += 8) hSample.push(heights[j * res + i]!);
+  }
+  hSample.sort((a, b) => a - b);
+  const patchMedian = hSample[Math.floor(hSample.length / 2)]!;
+
+  interface AreaFit { tilt: number; rms: number; maxAbs: number; prominence: number }
+  const areaFit = (fi: number, fj: number): AreaFit => {
     const clampI = (v: number) => Math.min(res - 1, Math.max(0, v));
-    const pts: Array<[number, number]> = [[fi, fj]];
-    for (const rr of [0.5, 1]) {
-      for (let k = 0; k < 6; k++) {
-        const a = (Math.PI / 3) * k + (rr === 1 ? Math.PI / 6 : 0);
-        pts.push([
-          clampI(Math.round(fi + Math.cos(a) * rCells * rr)),
-          clampI(Math.round(fj + Math.sin(a) * rCells * rr)),
-        ]);
+    // Polar sample grid: center + 4 rings × 8 spokes = 33 points across the window.
+    const xs: number[] = [0];
+    const zs: number[] = [0];
+    const hs: number[] = [heights[clampI(fj) * res + clampI(fi)]!];
+    for (const rr of [0.25, 0.5, 0.75, 1]) {
+      for (let k = 0; k < 8; k++) {
+        const a = (Math.PI / 4) * k + rr * 0.7; // stagger rings so spokes don't align
+        const dx = Math.cos(a) * rCells * rr;
+        const dz = Math.sin(a) * rCells * rr;
+        xs.push(dx * cellSize);
+        zs.push(dz * cellSize);
+        hs.push(heights[clampI(Math.round(fj + dz)) * res + clampI(Math.round(fi + dx))]!);
       }
     }
-    let slopeSum = 0;
-    const hs: number[] = [];
-    for (const [pi, pj] of pts) {
-      slopeSum += slopeAt(field, pi, pj);
-      hs.push(heights[pj * res + pi]!);
+    // Least-squares plane h ≈ a·x + b·z + c over the window (centered normal eqs).
+    const n = hs.length;
+    let sx = 0, sz = 0, sh = 0, sxx = 0, szz = 0, sxz = 0, sxh = 0, szh = 0;
+    for (let i = 0; i < n; i++) {
+      sx += xs[i]!; sz += zs[i]!; sh += hs[i]!;
+      sxx += xs[i]! * xs[i]!; szz += zs[i]! * zs[i]!; sxz += xs[i]! * zs[i]!;
+      sxh += xs[i]! * hs[i]!; szh += zs[i]! * hs[i]!;
     }
-    const mean = hs.reduce((s, v) => s + v, 0) / hs.length;
-    const rms = Math.sqrt(hs.reduce((s, v) => s + (v - mean) ** 2, 0) / hs.length);
-    return { meanSlope: slopeSum / pts.length, rms };
+    const mx = sx / n, mz = sz / n, mh = sh / n;
+    const cxx = sxx / n - mx * mx, czz = szz / n - mz * mz, cxz = sxz / n - mx * mz;
+    const cxh = sxh / n - mx * mh, czh = szh / n - mz * mh;
+    const det = cxx * czz - cxz * cxz;
+    const a = det > 1e-9 ? (cxh * czz - czh * cxz) / det : 0;
+    const b = det > 1e-9 ? (czh * cxx - cxh * cxz) / det : 0;
+    let ss = 0, maxAbs = 0;
+    for (let i = 0; i < n; i++) {
+      const r = hs[i]! - (a * (xs[i]! - mx) + b * (zs[i]! - mz) + mh);
+      ss += r * r;
+      if (Math.abs(r) > maxAbs) maxAbs = Math.abs(r);
+    }
+    return { tilt: Math.hypot(a, b), rms: Math.sqrt(ss / n), maxAbs, prominence: mh - patchMedian };
   };
 
-  interface Cand { x: number; z: number; slope: number; score: number; }
+  const scoreFit = (f: AreaFit, x: number, z: number): number => {
+    const centrality = Math.hypot(x, z) / size;
+    return (
+      f.tilt * 8                             // reject smooth slopes
+      + (f.rms / evalR) * 6                  // reject general bumpiness
+      + (f.maxAbs / evalR) * 5               // reject a ridge crossing the window
+      + (Math.abs(f.prominence) / size) * 8  // reject hilltops/pits off the patch median
+      + centrality * 0.2                     // gentle center preference (tie-break)
+    );
+  };
+
+  interface Cand { x: number; z: number; fit: AreaFit; score: number; }
   const collectCandidates = (respectRocks: boolean): Cand[] => {
     const out: Cand[] = [];
     for (let gj = 0; gj < G; gj++) {
@@ -133,31 +191,31 @@ export function computeTerrainMeta(
         if (respectRocks && occupied[gj * G + gi]) continue;
         const fi = Math.round((gi / (G - 1)) * (res - 1));
         const fj = Math.round((gj / (G - 1)) * (res - 1));
-        const s = slopeAt(field, fi, fj);
-        if (s >= flatThresh) continue;
-        const { meanSlope, rms } = areaStats(fi, fj);
+        if (slopeAt(field, fi, fj) >= flatThresh) continue; // cheap point pre-filter
         const x = coord(fi), z = coord(fj);
-        // Normalized deviation (rms per pad radius ≈ tangent of the area tilt) +
-        // mean slope dominate; mild centrality preference breaks ties so the
-        // best pads gravitate to the middle of the patch, not its corners.
-        const centrality = Math.hypot(x, z) / size;
-        const score = (rms / padRadius) * 3 + meanSlope * 2 + centrality * 0.15;
-        out.push({ x, z, slope: meanSlope, score });
+        const fit = areaFit(fi, fj);
+        out.push({ x, z, fit, score: scoreFit(fit, x, z) });
       }
     }
     out.sort((a, b) => a.score - b.score);
     return out;
   };
 
-  // Greedy non-overlapping selection of the flattest spots.
+  // Greedy non-overlapping selection of the flattest windows. Spacing scales with
+  // the eval window (not the tiny pad disc) so the 6 pads spread across distinct
+  // flat regions instead of clustering in one basin.
   const selectPads = (cands: Cand[]): LandingPad[] => {
+    const spacing = evalR * 0.5;
     const pads: LandingPad[] = [];
     for (const c of cands) {
-      if (pads.length >= 8) break;
-      if (pads.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < padRadius * 2)) continue;
+      if (pads.length >= 6) break;
+      if (pads.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < spacing)) continue;
       const fi = Math.min(res - 1, Math.max(0, Math.round((c.x / size + 0.5) * (res - 1))));
       const fj = Math.min(res - 1, Math.max(0, Math.round((c.z / size + 0.5) * (res - 1))));
-      pads.push({ x: c.x, y: heights[fj * res + fi]!, z: c.z, radius: padRadius, slope: c.slope });
+      pads.push({
+        x: c.x, y: heights[fj * res + fi]!, z: c.z, radius: padRadius,
+        slope: c.fit.tilt, roughness: c.fit.maxAbs, prominence: c.fit.prominence,
+      });
     }
     return pads;
   };

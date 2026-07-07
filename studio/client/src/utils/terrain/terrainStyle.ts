@@ -89,9 +89,12 @@ export function deriveTerrainStyle(
     warp: 0.25 + np * 0.5,
   };
 
-  // Asteroids with stronger perturbation get more dramatic relief.
+  // Asteroids with stronger perturbation get more dramatic relief. Floor raised
+  // so even smooth (low-np) bodies grow proper tall ridges, not gentle swells —
+  // height is a fraction of the FOOTPRINT (scaled in generateTerrain), so on a
+  // wide patch these become real mountains tens of metres high.
   const mountains: MountainStyle = {
-    heightFrac: Math.max(0.05, Math.min(0.28, 0.06 + np * 0.4)),
+    heightFrac: Math.max(0.12, Math.min(0.36, 0.12 + np * 0.4)),
     frequency: 1.6,
     octaves: 5,
     regions: 3,
@@ -108,9 +111,12 @@ export function deriveTerrainStyle(
         count: Math.max(0, Math.round(num(craterStep.params.count, 12))),
         minSize: num(craterStep.params.minSize, 0.03) * CRATER_SIZE,
         maxSize: num(craterStep.params.maxSize, 0.25) * CRATER_SIZE,
-        depthRatio: num(craterStep.params.depthRatio, 0.25),
-        rimHeight: num(craterStep.params.rimHeight, 0.06),
-        sizeExponent: num(craterStep.params.sizeExponent, 1.8),
+        // DEEPER bowls + taller rims so impacts actually READ from above (shallow
+        // dishes vanished top-down); a flatter size-exponent yields more mid-size
+        // craters (not just invisible specks + a rare giant) for varied pockmarks.
+        depthRatio: Math.max(0.4, num(craterStep.params.depthRatio, 0.25)),
+        rimHeight: Math.max(0.1, num(craterStep.params.rimHeight, 0.06)),
+        sizeExponent: Math.min(1.35, num(craterStep.params.sizeExponent, 1.8)),
       }
     : null;
 
@@ -119,7 +125,9 @@ export function deriveTerrainStyle(
   // and width WAY down for terrain (they should be subtle linear features, not
   // dominant landforms).
   const RIDGE_AMP = 0.18, RIDGE_WIDTH = 0.4;
-  const FISSURE_AMP = 0.22, FISSURE_WIDTH = 0.45;
+  // Fissures dialled WAY down — the deep "canyon" trenches read badly; any that
+  // survive (density is near-zero in the variants) are now shallow hairline grooves.
+  const FISSURE_AMP = 0.08, FISSURE_WIDTH = 0.35;
 
   const ridgeStep = findStep(steps, "mesh:ridges");
   const ridges: LineLayerParams | null = ridgeStep
