@@ -26,6 +26,7 @@ import {
   type TerrainField,
 } from "./terrainField";
 import { scatterRocks, type TerrainScatter } from "./terrainScatter";
+import { applyTerraces, applyScarps, applyHummocky, applyCellulite } from "./terrainFeatures";
 import { computeTerrainMeta, type TerrainMeta } from "./terrainMeta";
 import type { TerrainStyle } from "./terrainStyle";
 
@@ -57,6 +58,18 @@ export interface TerrainParams {
   ridgeDensity: number;
   /** Thermal erosion amount [0..1] — slumps over-steep slopes into scree. */
   erosion: number;
+  // ── Optional landscape-variety features (0 = off; rolled per-site so no
+  //    two sites carry the same subset — see scripts/generate-terrains.ts). ──
+  /** Terrace/mesa blend strength [0..1]: stepped flat-topped plateaus. */
+  terraceAmount?: number;
+  /** Number of linear fault scarps (0 = none). */
+  scarpDensity?: number;
+  /** Hummocky-chaos strength [0..1]: small patches of knobbly blocky relief. */
+  hummockAmount?: number;
+  /** Talus/scree-apron strength [0..1]: extra debris at steep-slope feet. */
+  talusAmount?: number;
+  /** Cellulite strength [0..1]: soft rounded cellular texture in patches. */
+  celluliteAmount?: number;
 }
 
 export const DEFAULT_TERRAIN_PARAMS: TerrainParams = {
@@ -90,6 +103,10 @@ const LAYER = {
   FISSURES: 5,
   ROCKS: 6,
   REGIONAL: 7,
+  TERRACES: 8,
+  SCARPS: 9,
+  HUMMOCKY: 10,
+  CELLULITE: 11,
 } as const;
 
 export function generateTerrain(
@@ -155,9 +172,34 @@ export function generateTerrain(
       frequency: style.base.frequency * tile, // constant wavelength across tiles
       warp: style.base.warp,
       roughMaskFreq: 2.6,
+      edgeRise: 0.72, // flat centre for the base, hillier only toward the rim
     },
     seed(LAYER.BASE),
   );
+
+  // ── Terraces / mesas (masked stepped plateaus) ────────────────────
+  // Applied on the regional+base structure, BEFORE mountains/craters, so the
+  // mesas are large-scale ground that later features decorate. Masked to ~1-2
+  // zones so smooth plains remain elsewhere.
+  if (params.terraceAmount && params.terraceAmount > 0) {
+    applyTerraces(field, {
+      stepHeight: params.footprint * 0.02,
+      amount: params.terraceAmount,
+      scarpWidth: 0.32,
+      zoneFreq: 1.6,
+      coverage: 0.4,
+    }, seed(LAYER.TERRACES));
+  }
+
+  // ── Scarps / fault cliffs (a few linear down-drops) ───────────────
+  if (params.scarpDensity && params.scarpDensity > 0) {
+    applyScarps(field, {
+      count: Math.round(params.scarpDensity),
+      throwHeight: params.footprint * 0.03,
+      faceWidth: 0.012,
+      waviness: params.footprint * 0.03,
+    }, seed(LAYER.SCARPS));
+  }
 
   // ── Mountains ─────────────────────────────────────────────────────
   if (style.mountains && params.mountainAmount > 0) {
@@ -166,10 +208,11 @@ export function generateTerrain(
       {
         // Peak height scales with the FOOTPRINT (heightFrac is authored as a
         // fraction of the patch), NOT the reference tile — so a wide patch grows
-        // genuinely TALL ridges (tens of metres) instead of the same ~10 m bump
-        // stretched thin into a gentle hill. This is what brings back the dramatic
-        // massifs the small tiles had; K keeps the tallest around ~25-30% of width.
-        height: style.mountains.heightFrac * params.footprint * params.mountainAmount * 0.24,
+        // genuine relief (tens of metres) instead of a stretched-thin bump. K is
+        // trimmed (0.28→0.22) because the massif is now a rounded DOME (applyMountains
+        // redesign) rather than a picket of narrow spikes — a dome of the old spike
+        // height read as far too tall. Domed hills top out ~14-18% of the footprint.
+        height: style.mountains.heightFrac * params.footprint * params.mountainAmount * 0.22,
         frequency: style.mountains.frequency * tile * params.mountainScale,
         octaves: style.mountains.octaves,
         // 1-3 big massifs — count does NOT grow with area (that carpeted wide
@@ -182,18 +225,50 @@ export function generateTerrain(
     );
   }
 
+  // ── Hummocky chaos (small masked patches of blocky relief) ────────
+  // After mountains so it textures the plains between them; before craters so an
+  // impact still flattens any chaos it lands on.
+  if (params.hummockAmount && params.hummockAmount > 0) {
+    applyHummocky(field, {
+      amount: params.footprint * 0.014 * params.hummockAmount,
+      frequency: 11,
+      patchFreq: 3.2,
+      coverage: 0.3,
+    }, seed(LAYER.HUMMOCKY));
+  }
+
+  // ── Cellulite (soft rounded cellular texture in patches) ──────────
+  // The organic "orange-peel" fine detail — a few dressed zones over the plains.
+  if (params.celluliteAmount && params.celluliteAmount > 0) {
+    applyCellulite(field, {
+      amount: params.footprint * 0.01 * params.celluliteAmount,
+      frequency: 10,
+      warp: params.footprint * 0.04,
+      patchFreq: 2.8,
+      coverage: 0.4,
+    }, seed(LAYER.CELLULITE));
+  }
+
   // ── Craters (meteorite impacts: MIXED sizes, count ∝ √area) ──────
   if (style.craters) {
     const craters: CraterLayerParams = {
       ...style.craters,
       // Count grows with √area (not area) so a wide patch reads as a scattered
       // impact field, not a carpet of pits; density/detailBoost still tune it.
-      count: Math.round(style.craters.count * params.craterDensity * params.detailBoost * Math.sqrt(area) * 1.6),
-      // Small craters stay tile-anchored (fine detail); BIG ones scale with the
-      // FOOTPRINT (no anchor) so real basin-class impacts appear on a wide patch.
-      // sizeExponent (style) keeps most small with a few large — a natural field.
-      minSize: (style.craters.minSize / Math.max(1, params.detailBoost)) * sizeAnchor,
-      maxSize: style.craters.maxSize * 2.4,
+      // A FEW DOZEN distinct craters — NOT thousands. The old formula (×style.count
+      // ×detailBoost) produced ~4000 pits per patch; once they were made deep
+      // enough to see, that read as a carpet of overlapping concentric rings. Count
+      // now scales only with density × √area → a readable impact field (small→big).
+      count: Math.round(params.craterDensity * Math.sqrt(area) * 0.4),
+      // Min size floored to ~0.7% of the patch (~1.5 m) so craters actually READ —
+      // the tile-anchored min drifted to sub-metre specks that were invisible from
+      // above, which is why "I see no craters". BIG ones scale with the footprint
+      // for basin-class impacts; the flattened size-exponent (style) fills in the
+      // visible MID range so the field reads as pockmarked, small→large.
+      minSize: Math.max(0.007, (style.craters.minSize / Math.max(1, params.detailBoost)) * sizeAnchor),
+      // Capped smaller again — the biggest impacts should be a clear feature, not
+      // a basin spanning a third of the patch.
+      maxSize: style.craters.maxSize * 0.8,
     };
     applyCraters(field, craters, seed(LAYER.CRATERS));
   }
@@ -249,8 +324,9 @@ export function generateTerrain(
         // absolute sizes as the footprint grows); the power-law in scatterRocks
         // keeps most small with a scattering of big ones.
         minSize: style.rocks.minSize * 0.15 * sizeAnchor,
-        maxSize: style.rocks.maxSize * 3.2 * sizeAnchor,
+        maxSize: style.rocks.maxSize * 2.4 * sizeAnchor,
         embed: 0.3,
+        talus: params.talusAmount ?? 0,
       },
       seed(LAYER.ROCKS),
     );

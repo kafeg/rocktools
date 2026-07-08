@@ -46,11 +46,11 @@ export function createField(res: number, size: number): TerrainField {
 }
 
 /** World X/Z coordinate of grid column/row index (centered on origin). */
-function coord(idx: number, res: number, size: number): number {
+export function coord(idx: number, res: number, size: number): number {
   return (idx / (res - 1) - 0.5) * size;
 }
 
-function smoothstep(edge0: number, edge1: number, x: number): number {
+export function smoothstep(edge0: number, edge1: number, x: number): number {
   if (edge0 === edge1) return x < edge0 ? 0 : 1;
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
@@ -75,6 +75,12 @@ export interface BaseLayerParams {
    * of bumps. Only meaningful for the fine detail pass, not the regional swell.
    */
   roughMaskFreq?: number;
+  /**
+   * Optional EDGE-RISE radius (0..1 of the half-size). Beyond it the mask floor
+   * ramps to full so the patch EDGES stay hilly/broken while the centre — where a
+   * base sets down — is left flat by the roughness mask. 0/undefined = no edge rise.
+   */
+  edgeRise?: number;
 }
 
 export function applyBaseFbm(field: TerrainField, p: BaseLayerParams, seed: number): void {
@@ -102,7 +108,13 @@ export function applyBaseFbm(field: TerrainField, p: BaseLayerParams, seed: numb
         // fbm ∈ [-1,1] → [0,1]; below 0.42 the plain is FLAT, above 0.72 fully
         // rough, smooth transition between → soft-edged rough patches on flat ground.
         const m = fbm(nMask, x, z, maskOpts) * 0.5 + 0.5;
-        amp *= smoothstep(0.42, 0.72, m);
+        let mask = smoothstep(0.42, 0.72, m);
+        if (p.edgeRise) {
+          // Ramp the mask floor up toward the boundary so edges stay hilly.
+          const rad = Math.hypot(x, z) / (size * 0.5);
+          mask = Math.max(mask, smoothstep(p.edgeRise, 1.05, rad));
+        }
+        amp *= mask;
       }
       heights[j * res + i] += v * amp;
     }
@@ -142,7 +154,7 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
 
   const rand = mulberry32(seed ^ 0x51ed270b);
   const regionCount = Math.max(1, Math.round(p.regions));
-  const centers: Array<{ cx: number; cz: number; radius: number }> = [];
+  const centers: Array<{ cx: number; cz: number; radius: number; heightMul: number }> = [];
   for (let k = 0; k < regionCount; k++) {
     // Place massifs on an ANNULUS around the patch centre (dist 0.28-0.5 of the
     // half-size) so the central ground stays open for a base while ranges ring it
@@ -152,10 +164,12 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
     centers.push({
       cx: Math.cos(ang) * dist,
       cz: Math.sin(ang) * dist,
-      // LARGE massifs (radius ~0.18-0.4 of the patch) — a mountainous region
-      // takes up a real chunk of the map, with many interwoven ridge lines across
-      // it, rather than a small isolated bump.
-      radius: size * (0.18 + rand() * 0.22),
+      // VARIED radius per massif; max trimmed ~8% vs before (the broadest ranges
+      // swallowed the patch) → [0.20, 0.44] of the footprint.
+      radius: size * (0.2 + rand() * 0.24),
+      // Per-massif HEIGHT so a range is a mix of low swells and prominent hills,
+      // not a row of equal peaks.
+      heightMul: 0.5 + rand() * 0.5,
     });
   }
 
@@ -163,24 +177,29 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
     const z = coord(j, res, size);
     for (let i = 0; i < res; i++) {
       const x = coord(i, res, size);
-      let mask = 0;
+      let mask = 0, hMul = 1;
       for (const c of centers) {
         const d = Math.hypot(x - c.cx, z - c.cz);
         const m = smoothstep(c.radius, 0, d);
-        if (m > mask) mask = m;
+        if (m > mask) { mask = m; hMul = c.heightMul; }
       }
       if (mask <= 0) continue;
 
       const wx = fbm(nWarpX, x, z, warpOpts) * warp;
       const wy = fbm(nWarpY, x, z, warpOpts) * warp;
-      // Rounded ridgelines: pow<1 broadens crests so they aren't razor-sharp.
-      const rid = Math.pow(ridged(nRidge, x + wx, z + wy, ridgeOpts), 0.75);
-      const billow = fbm(nBillow, x + wx, z + wy, billowOpts) * 0.5 + 0.5; // [0,1]
-      // Blend ridgelines with billow. sharpness=1 → crisp ridges, 0 → rounded
-      // mass; billow filling the valleys keeps it a massif, not isolated spikes.
+      // A broad domed HILL carries the bulk height — the smooth radial envelope
+      // times a gentle billow undulation of the hill top — so a mountain reads as a
+      // rounded massif, NOT a picket of narrow spikes. The ridged field is only a
+      // LOW-amplitude TEXTURE riding on that dome (it fades to nothing at the foot),
+      // giving rocky ridgelines WITHOUT protruding crests: "a hill first, ridge
+      // detail laid over it" — height without the spiky gribbles.
+      const envelope = mask * mask * (3 - 2 * mask);      // smooth radial dome [0,1]
+      const dome = 0.6 + 0.4 * (fbm(nBillow, x + wx, z + wy, billowOpts) * 0.5 + 0.5);
+      const ridgeTex = ridged(nRidge, x + wx, z + wy, ridgeOpts) - 0.45; // ~[-0.45,0.55]
       const sw = Math.min(1, Math.max(0, p.sharpness));
-      const hN = sw * rid + (1 - sw) * billow;
-      heights[j * res + i] += hN * p.height * (mask * (3 - 2 * mask) * mask);
+      const texAmp = 0.15 + 0.25 * sw;                    // ridge overlay 15-40% of local h
+      const local = Math.max(0, dome * (1 + ridgeTex * texAmp));
+      heights[j * res + i] += p.height * hMul * envelope * local;
     }
   }
 }
@@ -226,12 +245,29 @@ export function applyCraters(field: TerrainField, p: CraterLayerParams, seed: nu
   const carve = new Float32Array(res * res); // most-negative bowl wins
   const rimBuf = new Float32Array(res * res); // tallest rim wins
   const ejecta = new Float32Array(res * res); // additive ejecta blanket
+  // FLATTEN buffers: an impact bowl ERASES the relief it landed on (no mountain
+  // left standing inside a crater) — the interior is pulled toward the rim's own
+  // level, then the bowl is carved below it. `flatten` is the max strength, and
+  // `flatTarget` the height to pull toward, both won by the crater with the most
+  // interior coverage at that cell.
+  const flatten = new Float32Array(res * res);
+  const flatTarget = new Float32Array(res * res);
   const ejectaExtent = 1.8;
 
   for (const c of craters) {
     const depth = c.radius * p.depthRatio;
     const rimH = c.radius * p.rimHeight;
     const reach = c.radius * ejectaExtent;
+    // Rim reference: average PRE-crater height on the t≈1 ring — the level the
+    // interior flattens to (so a bowl on a plateau floors at the plateau, not 0).
+    let rimSum = 0, rimN = 0;
+    for (let a = 0; a < 8; a++) {
+      const ang = (Math.PI / 4) * a;
+      const ri = Math.round((c.cx + Math.cos(ang) * c.radius + size / 2) / cell);
+      const rj = Math.round((c.cz + Math.sin(ang) * c.radius + size / 2) / cell);
+      if (ri >= 0 && ri < res && rj >= 0 && rj < res) { rimSum += heights[rj * res + ri]!; rimN++; }
+    }
+    const rimRef = rimN > 0 ? rimSum / rimN : 0;
     const i0 = Math.max(0, Math.floor((c.cx + size / 2 - reach) / cell));
     const i1 = Math.min(res - 1, Math.ceil((c.cx + size / 2 + reach) / cell));
     const j0 = Math.max(0, Math.floor((c.cz + size / 2 - reach) / cell));
@@ -246,6 +282,10 @@ export function applyCraters(field: TerrainField, p: CraterLayerParams, seed: nu
         if (t < 1) {
           const bowl = -depth * Math.pow(1 - t * t, 1.35);
           if (bowl < carve[idx]!) carve[idx] = bowl;
+          // Interior flatten: strong at centre → 0 at rim; the crater that covers
+          // this cell most (biggest interior) owns the target level.
+          const inter = Math.pow(1 - t * t, 0.6) * 0.92;
+          if (inter > flatten[idx]!) { flatten[idx] = inter; flatTarget[idx] = rimRef; }
           const floorIntensity = (1 - t) * (depth / (c.radius || 1));
           const fi = idx * 4;
           if (floorIntensity > feature[fi]!) feature[fi] = Math.min(1, floorIntensity);
@@ -263,6 +303,10 @@ export function applyCraters(field: TerrainField, p: CraterLayerParams, seed: nu
   }
 
   for (let k = 0; k < heights.length; k++) {
+    // Flatten the pre-existing relief toward the rim level inside the bowl, THEN
+    // apply the bowl + rim + ejecta.
+    const f = flatten[k]!;
+    if (f > 0) heights[k] = heights[k]! * (1 - f) + flatTarget[k]! * f;
     heights[k] += carve[k]! + rimBuf[k]! + ejecta[k]!;
   }
 }

@@ -114,9 +114,9 @@ export function deriveTerrainStyle(
         // DEEPER bowls + taller rims so impacts actually READ from above (shallow
         // dishes vanished top-down); a flatter size-exponent yields more mid-size
         // craters (not just invisible specks + a rare giant) for varied pockmarks.
-        depthRatio: Math.max(0.4, num(craterStep.params.depthRatio, 0.25)),
+        depthRatio: Math.max(0.42, num(craterStep.params.depthRatio, 0.25)),
         rimHeight: Math.max(0.1, num(craterStep.params.rimHeight, 0.06)),
-        sizeExponent: Math.min(1.35, num(craterStep.params.sizeExponent, 1.8)),
+        sizeExponent: Math.min(1.4, num(craterStep.params.sizeExponent, 1.8)),
       }
     : null;
 
