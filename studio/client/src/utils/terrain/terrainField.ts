@@ -133,6 +133,13 @@ export interface MountainLayerParams {
   regions: number;
   /** Ridged-vs-billow blend [0..1]: 1 = sharp ridgelines, 0 = smooth rounded mass. */
   sharpness: number;
+  /**
+   * Central KEEP-OUT radius (world units). Mountains fade to 0 within it so a flat
+   * central landing zone always survives — the coordinator pad + rig grid live at
+   * the patch centre, and a massif crowding it forces the pad off to a corner
+   * (which then breaks the camera framing). 0/undefined = no keep-out.
+   */
+  centerClear?: number;
 }
 
 export function applyMountains(field: TerrainField, p: MountainLayerParams, seed: number): void {
@@ -184,6 +191,12 @@ export function applyMountains(field: TerrainField, p: MountainLayerParams, seed
         if (m > mask) { mask = m; hMul = c.heightMul; }
       }
       if (mask <= 0) continue;
+      // Central keep-out: suppress any massif that reaches into the flat landing
+      // zone at the patch centre (fades in over the inner 60-100% of the radius).
+      if (p.centerClear) {
+        mask *= smoothstep(p.centerClear * 0.6, p.centerClear, Math.hypot(x, z));
+        if (mask <= 0) continue;
+      }
 
       const wx = fbm(nWarpX, x, z, warpOpts) * warp;
       const wy = fbm(nWarpY, x, z, warpOpts) * warp;

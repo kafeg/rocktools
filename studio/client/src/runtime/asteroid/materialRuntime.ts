@@ -292,11 +292,27 @@ if (uFeatureIntensity > 0.01) {
 // in the surface/factory canvases; the AU main scene only shows the patch at
 // close-up swap range, where full grain is exactly what we want.
 if (uTerrainFlatMode > 0.5) {
-  float grainFade = 1.0 - smoothstep(6.0, 22.0, length(vViewPosition));
+  float grainVd = length(vViewPosition);
+  // NEAR grain (millimetre sand, only <22 m): unchanged — full crunch when you
+  // are standing on the surface, off before it shimmers at range.
+  float grainFade = 1.0 - smoothstep(6.0, 22.0, grainVd);
   if (grainFade > 0.01) {
     vec3 g1 = normalize(uObjectToViewNormalMatrix * snoiseGrad(vObjPosition * 260.0));
     vec3 g2 = normalize(uObjectToViewNormalMatrix * snoiseGrad(vObjPosition * 940.0));
     normal = normalize(normal + (g1 * 0.55 + g2 * 0.45) * 0.10 * grainFade);
+  }
+  // MID-RANGE regolith relief (decimetre-to-metre gravel/clumps/pitting): the scale
+  // that actually READS from the orbital Factory view (tens of metres out), where
+  // the fine sand grain above is sub-pixel and already faded — this is what stops
+  // the patch looking soapy/smoothed at working distance. Eases in as the near band
+  // fades and stays on across the whole Factory zoom range, off only far past it.
+  // ONE octave only — snoiseGrad is 6 snoise() taps (finite difference), so this
+  // runs across the whole patch cheaply. Three octaves tanked the GTX-1060 frame
+  // rate (~18 taps/pixel); a single mid-scale band already kills the soapy look.
+  float midFade = smoothstep(8.0, 26.0, grainVd) * (1.0 - smoothstep(130.0, 240.0, grainVd));
+  if (midFade > 0.01) {
+    vec3 m1 = normalize(uObjectToViewNormalMatrix * snoiseGrad(vObjPosition * 1.2));
+    normal = normalize(normal + m1 * 0.26 * midFade);
   }
 }
 `;
@@ -329,7 +345,9 @@ if (uFrostAmount > 0.01) {
 }
 if (uTerrainFlatMode > 0.5) {
   float steep = 1.0 - smoothstep(0.55, 0.92, vSlope);
-  roughnessFactor = clamp(roughnessFactor + steep * 0.15, 0.05, 1.0);
+  // Dusty regolith is ROUGH everywhere; floor it high so the surface stays matte
+  // (no wet sheen), a touch rougher still on the flats where dust settles.
+  roughnessFactor = clamp(max(roughnessFactor, 0.86) + steep * 0.1, 0.05, 1.0);
 }
 `;
 
@@ -344,6 +362,13 @@ if (uFeatureIntensity > 0.01) {
   mMod += fissureDepth * 0.05 * uFissureShading;
 
   metalnessFactor = clamp(metalnessFactor + mMod * fi, 0.0, 1.0);
+}
+if (uTerrainFlatMode > 0.5) {
+  // Regolith is DUST — matte, not bare polished metal. Even an M-type body's
+  // surface is dust-coated; the "wet plastic / plasticine" sheen came from the
+  // body's high base metalness bleeding onto the close-up terrain patch. Matte it
+  // here (the distant whole-body render is unaffected — it keeps its metalness).
+  metalnessFactor = min(metalnessFactor, 0.04);
 }
 `;
 
@@ -524,16 +549,26 @@ const FRAG_COLOR = /* glsl */ `
   // Terrain slope splat: steep faces read as exposed (darker, cooler) rock,
   // flats keep the dusty base. Large-scale tonal noise breaks up uniformity.
   if (uTerrainFlatMode > 0.5) {
+    float terrVd = length(vViewPosition);
     float steep = 1.0 - smoothstep(0.55, 0.92, vSlope); // 0 = flat, 1 = vertical
     finalColor *= mix(1.0, 0.55, steep);
     finalColor = mix(finalColor, finalColor * vec3(0.9, 0.93, 1.0), steep * 0.5);
     float tone = snoise(vObjPosition * 1.5) * 0.07;
     finalColor *= (1.0 + tone);
 
+    // MID-RANGE dust mottling: blotchy light/dark regolith patches at the metre
+    // scale so the albedo isn't a flat wash from the Factory view (the fine speckle
+    // below is sub-pixel and faded there). Same window as the mid normal band.
+    float dustMidFade = smoothstep(8.0, 26.0, terrVd) * (1.0 - smoothstep(130.0, 240.0, terrVd));
+    if (dustMidFade > 0.01) {
+      float mottle = snoise(vObjPosition * 3.0) * 0.13; // single tap — cheap albedo variety
+      finalColor *= 1.0 + mottle * dustMidFade;
+    }
+
     // Near-field sand speckle + sparse mineral glints — the albedo half of the
     // regolith grain (the normal half lives in NORMAL_PERTURBATION). Same view
     // distance fade so the far field stays clean.
-    float sandFade = 1.0 - smoothstep(6.0, 22.0, length(vViewPosition));
+    float sandFade = 1.0 - smoothstep(6.0, 22.0, terrVd);
     if (sandFade > 0.01) {
       float speckle = snoise(vObjPosition * 430.0) * 0.05 + snoise(vObjPosition * 1450.0) * 0.04;
       float glint = smoothstep(0.8, 0.96, snoise(vObjPosition * 2300.0)) * 0.22;

@@ -179,7 +179,12 @@ export function computeTerrainMeta(
       + (f.rms / evalR) * 6                  // reject general bumpiness
       + (f.maxAbs / evalR) * 5               // reject a ridge crossing the window
       + (Math.abs(f.prominence) / size) * 8  // reject hilltops/pits off the patch median
-      + centrality * 0.2                     // gentle center preference (tie-break)
+      + centrality * 2.5                     // STRONG centre preference: the pad must
+                                             // sit near the middle (the camera frames
+                                             // it and can't leave the patch) — a
+                                             // slightly bumpier central spot beats a
+                                             // pristine corner. The mountain keep-out
+                                             // guarantees the centre is genuinely flat.
     );
   };
 
@@ -202,13 +207,17 @@ export function computeTerrainMeta(
   };
 
   // Greedy non-overlapping selection of the flattest windows. Spacing scales with
-  // the eval window (not the tiny pad disc) so the 6 pads spread across distinct
-  // flat regions instead of clustering in one basin.
+  // the eval window (not the tiny pad disc) so the pads spread across distinct flat
+  // regions instead of clustering in one basin. Centre-weighted scoring orders them
+  // flattest-and-most-central first. Up to 10 candidates so the RUNTIME picker
+  // (choosePad) has real choice — only ONE is ever rendered (the grid centre), so
+  // extra candidates cost nothing visually but let it dodge a crater rim for a
+  // genuinely flat plain a few metres over.
   const selectPads = (cands: Cand[]): LandingPad[] => {
-    const spacing = evalR * 0.5;
+    const spacing = evalR * 0.4;
     const pads: LandingPad[] = [];
     for (const c of cands) {
-      if (pads.length >= 6) break;
+      if (pads.length >= 10) break;
       if (pads.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < spacing)) continue;
       const fi = Math.min(res - 1, Math.max(0, Math.round((c.x / size + 0.5) * (res - 1))));
       const fj = Math.min(res - 1, Math.max(0, Math.round((c.z / size + 0.5) * (res - 1))));

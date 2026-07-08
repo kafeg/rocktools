@@ -215,11 +215,15 @@ export function generateTerrain(
         height: style.mountains.heightFrac * params.footprint * params.mountainAmount * 0.22,
         frequency: style.mountains.frequency * tile * params.mountainScale,
         octaves: style.mountains.octaves,
-        // 1-3 big massifs — count does NOT grow with area (that carpeted wide
-        // patches with dozens of little bumps); a handful of large ranges ringing
-        // the open centre reads as "mountains HERE, plain THERE".
-        regions: Math.min(3, Math.max(1, Math.round(style.mountains.regions * params.mountainCoverage * 2.5))),
+        // 1-2 big massifs — count does NOT grow with area (that carpeted wide
+        // patches with dozens of little bumps); one or two large ranges to the SIDE
+        // of the open centre reads as "mountains HERE, plain THERE". Capped at 2
+        // (was 3) so massifs don't ring and crowd the whole patch.
+        regions: Math.min(2, Math.max(1, Math.round(style.mountains.regions * params.mountainCoverage * 2.5))),
         sharpness: params.foldSharpness,
+        // Keep a flat central disc (~40% of the footprint across) clear for the
+        // landing pad + rig grid, so the pad never gets pushed to a corner.
+        centerClear: params.footprint * 0.2,
       },
       seed(LAYER.MOUNTAINS),
     );
