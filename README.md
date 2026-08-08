@@ -118,4 +118,12 @@ rocktools/
 
 This project is a fork of [rocktools](https://github.com/markstock/rocktools) by [Mark J. Stock](https://markjstock.org/rocktools/) — a C toolkit for creating and manipulating triangular meshes, originally started in 1999. The original C tools are compiled to WebAssembly and wrapped in a modern web application with additional mesh modifiers, GPU shader effects, and a visual pipeline editor.
 
-Original rocktools is licensed under the [GNU General Public License v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
+## License
+
+**GPL-2.0-or-later.** Original rocktools is licensed under the
+[GNU General Public License v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html) or,
+at your option, any later version; as a fork this project inherits those terms in full. The
+license text is in [LICENSE](LICENSE).
+
+Meshes you generate with these tools are yours and carry no GPL obligation — see
+[NOTICE.md](NOTICE.md), which also covers the bundled CC0 textures and HDRIs.
