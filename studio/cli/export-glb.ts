@@ -257,7 +257,11 @@ async function main() {
       "--disable-software-rasterizer",// Prevent fallback to SwiftShader CPU-based renderer
       "--disable-dev-shm-usage",
       //"--use-gl=desktop", // Use the desktop OpenGL driver
-      "--window-size=920,780" // Optional: set a visible window size
+      "--window-size=920,780", // Optional: set a visible window size
+      // The GPU check below needs a real window, so this cannot run headless — but a batch of a
+      // hundred bodies then opens and steals focus from a hundred windows. Park it off-screen
+      // unless the caller asked to watch (--headful).
+      ...(opts.headful ? [] : ["--window-position=-4000,-4000"]),
 
       // ── THESE FLAGS MUST NOT BE ENABLED ──
       // They force SwiftShader (CPU software renderer) which destroys procedural texture quality:
