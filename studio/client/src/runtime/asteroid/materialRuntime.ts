@@ -41,6 +41,10 @@ export interface AsteroidShaderUniforms {
   uHasTexture: { value: number };
   uApplyTint: { value: number };
   uTriplanarSharpness: { value: number };
+  /** Texture repeats per object unit. 0.5 = exactly one copy over [-1, 1]. */
+  uTextureTiling: { value: number };
+  /** 1 = hex de-tiling (3 taps per projection), 0 = plain tiling (1 tap). */
+  uDetile: { value: number };
   uAoStrength: { value: number };
   uAoRadius: { value: number };
   uFrostAmount: { value: number };
@@ -198,6 +202,8 @@ uniform sampler2D uNormalMap;
 uniform float uHasTexture;
 uniform float uApplyTint;
 uniform float uTriplanarSharpness;
+uniform float uTextureTiling;
+uniform float uDetile;
 uniform float uAoStrength;
 uniform float uAoRadius;
 uniform float uFrostAmount;
@@ -219,25 +225,108 @@ varying float vSlope;
 varying vec4 vFeature;
 varying vec4 vFeature2;
 
+/*
+ * TEXTURE PROJECTION
+ *
+ * The maps are projected triplanarly from object position — there are no UVs on
+ * these meshes. uTextureTiling is the number of texture repeats per object
+ * unit; at 0.5 exactly one copy spans the object's [-1, 1], which is how this
+ * started and what every call site got before the uniform existed. One copy over
+ * a whole body is 0.9 m/texel, and over a 300 m terrain patch 0.3 m/texel, so
+ * anything you can walk up to is a blur — raising the tiling is the only cure.
+ *
+ * Tiling alone trades blur for a visible grid, so uDetile turns on hex-tiling
+ * (Mikkelsen 2022, "Practical Real-Time Hex-Tiling", in its three-tap form): the
+ * plane is covered by a triangular lattice, each cell samples the texture with
+ * its own hashed offset and rotation, and the three nearest cells are blended.
+ * Weights are sharpened before blending — a plain weighted mean of three samples
+ * regresses to the texture's average and reads as a wash, which is the thing the
+ * published variance-preserving blend exists to avoid; sharpening keeps each
+ * cell's own contrast and narrows the transitions to where they are not read as
+ * features.
+ *
+ * ⚠ The taps MUST use explicit gradients. Each one lands at a different UV, so an
+ * implicit derivative straddling a cell boundary is enormous and the hardware
+ * picks a near-1x1 mip — a blurred seam along every cell edge. The gradients of
+ * the UNDISPLACED uv are the right ones for all three. They also make the sampling
+ * legal inside the blend-weight branches below, which are non-uniform control flow.
+ */
+vec2 hashCell(vec2 cell) {
+  return fract(sin(vec2(dot(cell, vec2(127.1, 311.7)), dot(cell, vec2(269.5, 183.3)))) * 43758.5453);
+}
+
+vec3 detiledSample(sampler2D tex, vec2 uv, vec2 duvdx, vec2 duvdy) {
+  // Skewed lattice → the enclosing triangle's three vertices and barycentrics.
+  const mat2 TO_SKEWED = mat2(1.0, 0.0, -0.57735027, 1.15470054);
+  vec2 skewed = TO_SKEWED * uv;
+  vec2 base = floor(skewed);
+  vec3 bary = vec3(fract(skewed), 0.0);
+  bary.z = 1.0 - bary.x - bary.y;
+  float upper = step(0.0, -bary.z);
+  float flip = 2.0 * upper - 1.0;
+  vec2 cellA = base + vec2(upper, upper);
+  vec2 cellB = base + vec2(upper, 1.0 - upper);
+  vec2 cellC = base + vec2(1.0 - upper, upper);
+  vec3 w = vec3(-bary.z * flip, upper - bary.y * flip, upper - bary.x * flip);
+
+  vec3 sum = vec3(0.0);
+  vec2 cells[3];
+  cells[0] = cellA; cells[1] = cellB; cells[2] = cellC;
+  // Sharpen, then renormalize: keeps each cell's contrast instead of averaging
+  // three decorrelated samples into the texture's mean.
+  vec3 sharp = pow(max(w, vec3(0.0)), vec3(7.0));
+  sharp /= max(sharp.x + sharp.y + sharp.z, 1e-6);
+  for (int i = 0; i < 3; i++) {
+    vec2 h = hashCell(cells[i]);
+    // Per-cell rotation as well as offset: offsets alone leave the texture's own
+    // directional features all pointing the same way, which still reads as repeat.
+    float a = h.x * 6.2831853;
+    float ca = cos(a), sa = sin(a);
+    mat2 rot = mat2(ca, -sa, sa, ca);
+    vec2 ruv = rot * uv + h * 43.0;
+    sum += textureGrad(tex, ruv, rot * duvdx, rot * duvdy).rgb * sharp[i];
+  }
+  return sum;
+}
+
+vec3 projectedSample(sampler2D tex, vec2 uv) {
+  vec2 duvdx = dFdx(uv);
+  vec2 duvdy = dFdy(uv);
+  if (uDetile > 0.5) return detiledSample(tex, uv, duvdx, duvdy);
+  return textureGrad(tex, uv, duvdx, duvdy).rgb;
+}
+
+/* The blend weights decide which projections are worth paying for: on a terrain
+ * heightfield the normal is essentially +Y, so only the XZ plane contributes and
+ * the cost stays at what one projection costs — which is what makes de-tiling
+ * affordable there. A body's slopes light up two or three. */
 vec3 triplanarSample(sampler2D tex, vec3 pos, vec3 norm, float sharpness) {
   vec3 blend = pow(abs(norm), vec3(sharpness));
   blend /= (blend.x + blend.y + blend.z);
-  vec3 xProj = texture2D(tex, pos.yz * 0.5 + 0.5).rgb;
-  vec3 yProj = texture2D(tex, pos.xz * 0.5 + 0.5).rgb;
-  vec3 zProj = texture2D(tex, pos.xy * 0.5 + 0.5).rgb;
-  return xProj * blend.x + yProj * blend.y + zProj * blend.z;
+  vec3 sum = vec3(0.0);
+  if (blend.x > 0.01) sum += projectedSample(tex, pos.yz * uTextureTiling + 0.5) * blend.x;
+  if (blend.y > 0.01) sum += projectedSample(tex, pos.xz * uTextureTiling + 0.5) * blend.y;
+  if (blend.z > 0.01) sum += projectedSample(tex, pos.xy * uTextureTiling + 0.5) * blend.z;
+  return sum;
 }
 
 vec3 triplanarNormal(sampler2D tex, vec3 pos, vec3 norm, float sharpness) {
   vec3 blend = pow(abs(norm), vec3(sharpness));
   blend /= (blend.x + blend.y + blend.z);
-  vec3 xN = texture2D(tex, pos.yz * 0.5 + 0.5).rgb * 2.0 - 1.0;
-  vec3 yN = texture2D(tex, pos.xz * 0.5 + 0.5).rgb * 2.0 - 1.0;
-  vec3 zN = texture2D(tex, pos.xy * 0.5 + 0.5).rgb * 2.0 - 1.0;
-  vec3 xTan = normalize(vec3(0.0, xN.y, -xN.x));
-  vec3 yTan = normalize(vec3(yN.x, 0.0, -yN.y));
-  vec3 zTan = normalize(vec3(zN.x, -zN.y, 0.0));
-  return normalize(xTan * blend.x + yTan * blend.y + zTan * blend.z);
+  vec3 tangent = vec3(0.0);
+  if (blend.x > 0.01) {
+    vec3 n = projectedSample(tex, pos.yz * uTextureTiling + 0.5) * 2.0 - 1.0;
+    tangent += normalize(vec3(0.0, n.y, -n.x)) * blend.x;
+  }
+  if (blend.y > 0.01) {
+    vec3 n = projectedSample(tex, pos.xz * uTextureTiling + 0.5) * 2.0 - 1.0;
+    tangent += normalize(vec3(n.x, 0.0, -n.y)) * blend.y;
+  }
+  if (blend.z > 0.01) {
+    vec3 n = projectedSample(tex, pos.xy * uTextureTiling + 0.5) * 2.0 - 1.0;
+    tangent += normalize(vec3(n.x, -n.y, 0.0)) * blend.z;
+  }
+  return normalize(tangent);
 }
 `;
 
@@ -695,6 +784,8 @@ export function createAsteroidShaderUniforms(): AsteroidShaderUniforms {
     uHasTexture: { value: 0 },
     uApplyTint: { value: 0 },
     uTriplanarSharpness: { value: 4.0 },
+    uTextureTiling: { value: 0.5 },
+    uDetile: { value: 0 },
     uAoStrength: { value: 0 },
     uAoRadius: { value: 0.5 },
     uFrostAmount: { value: 0 },
