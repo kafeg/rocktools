@@ -3,6 +3,7 @@ import {
   type MeshModifier,
   computeVertexNormals,
   getMeshRadius,
+  overlapAttenuation,
   ensureOccupancy,
   ensureFeatureData2,
 } from "./meshModifiers";
@@ -233,7 +234,8 @@ export const ridgeModifier: MeshModifier = {
       const vy = newPositions[vi * 3 + 1]!;
       const vz = newPositions[vi * 3 + 2]!;
 
-      if (p.avoidOverlap && occupancy[vi]! > meshRadius * 0.01) continue;
+      const gate = overlapAttenuation(occupancy[vi]!, meshRadius, p.avoidOverlap);
+      if (gate <= 0) continue;
 
       // Ridge paths live on a sphere of `meshRadius`, but real asteroid vertices
       // sit well inside it — measuring distance from the raw vertex makes the arc
@@ -267,6 +269,7 @@ export const ridgeModifier: MeshModifier = {
         totalDisplacement += localHeight * profile;
       }
 
+      totalDisplacement *= gate;
       if (Math.abs(totalDisplacement) > 1e-10) {
         const nx = mesh.normals[vi * 3]!;
         const ny = mesh.normals[vi * 3 + 1]!;

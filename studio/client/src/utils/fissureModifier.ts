@@ -3,6 +3,7 @@ import {
   type MeshModifier,
   computeVertexNormals,
   getMeshRadius,
+  overlapAttenuation,
   ensureOccupancy,
   ensureFeatureData,
 } from "./meshModifiers";
@@ -214,7 +215,8 @@ export const fissureModifier: MeshModifier = {
       const vy = newPositions[vi * 3 + 1]!;
       const vz = newPositions[vi * 3 + 2]!;
 
-      if (p.avoidOverlap && occupancy[vi]! > meshRadius * 0.01) continue;
+      const gate = overlapAttenuation(occupancy[vi]!, meshRadius, p.avoidOverlap);
+      if (gate <= 0) continue;
 
       // Project vertex onto the sphere where fissure paths live
       const vr = Math.sqrt(vx * vx + vy * vy + vz * vz);
@@ -236,6 +238,7 @@ export const fissureModifier: MeshModifier = {
         }
       }
 
+      maxDepth *= gate;
       if (Math.abs(maxDepth) > 1e-10) {
         const nx = mesh.normals[vi * 3]!;
         const ny = mesh.normals[vi * 3 + 1]!;

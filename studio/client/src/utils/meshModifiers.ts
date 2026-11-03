@@ -21,6 +21,29 @@ export function ensureOccupancy(mesh: MeshData): Float64Array {
   return mesh.occupancy;
 }
 
+/** Where `avoidOverlap` starts holding a later modifier back, as a fraction of the mesh radius. */
+export const OVERLAP_THRESHOLD = 0.01;
+
+/**
+ * How much of a modifier's displacement survives where an earlier modifier already moved the
+ * vertex. Returns 1 well clear of existing features, falls smoothly to 0 over the band between
+ * one and two thresholds.
+ *
+ * This used to be `if (occupancy > threshold) continue` — a per-vertex all-or-nothing skip. Two
+ * features that overlap then met along a line where one vertex took a modifier's full
+ * displacement and its neighbour took none, which renders as a staircase of flat quads following
+ * the subdivision rows. Ryugu's fissures are twice the threshold deep, so every crater crossing
+ * one ended in that cliff.
+ */
+export function overlapAttenuation(occupancy: number, meshRadius: number, enabled: boolean): number {
+  if (!enabled) return 1;
+  const t = meshRadius * OVERLAP_THRESHOLD;
+  if (occupancy <= t) return 1;
+  if (occupancy >= t * 2) return 0;
+  const x = (occupancy - t) / t;
+  return 1 - x * x * (3 - 2 * x); // smoothstep
+}
+
 export function ensureFeatureData(mesh: MeshData): Float32Array {
   if (!mesh.featureData) mesh.featureData = new Float32Array(mesh.vertexCount * 4);
   return mesh.featureData;

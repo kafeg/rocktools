@@ -5,6 +5,7 @@ import {
   computeVertexNormals,
   pickRandomSurfacePoint,
   getMeshRadius,
+  overlapAttenuation,
   ensureOccupancy,
   ensureFeatureData,
   buildAdjacency,
@@ -116,7 +117,8 @@ export const boulderModifier: MeshModifier = {
       const vy = newPositions[vi * 3 + 1]!;
       const vz = newPositions[vi * 3 + 2]!;
 
-      if (p.avoidOverlap && occupancy[vi]! > meshRadius * 0.01) continue;
+      const gate = overlapAttenuation(occupancy[vi]!, meshRadius, p.avoidOverlap);
+      if (gate <= 0) continue;
 
       let totalDisplacement = 0;
 
@@ -147,7 +149,7 @@ export const boulderModifier: MeshModifier = {
         totalDisplacement += boulder.peakHeight * raised;
       }
 
-      totalDisplacement = Math.min(totalDisplacement, dispClamp);
+      totalDisplacement = Math.min(totalDisplacement, dispClamp) * gate;
 
       if (totalDisplacement > 1e-10) {
         const nx = mesh.normals[vi * 3]!;

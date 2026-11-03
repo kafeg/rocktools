@@ -5,6 +5,7 @@ import {
   computeVertexNormals,
   pickRandomSurfacePoint,
   getMeshRadius,
+  overlapAttenuation,
   ensureOccupancy,
   ensureFeatureData,
 } from "./meshModifiers";
@@ -131,7 +132,8 @@ export const craterModifier: MeshModifier = {
       const vy = newPositions[vi * 3 + 1]!;
       const vz = newPositions[vi * 3 + 2]!;
 
-      if (p.avoidOverlap && occupancy[vi]! > meshRadius * 0.01) continue;
+      const gate = overlapAttenuation(occupancy[vi]!, meshRadius, p.avoidOverlap);
+      if (gate <= 0) continue;
 
       let dispX = 0, dispY = 0, dispZ = 0;
       let maxCraterEffect = 0;
@@ -175,6 +177,7 @@ export const craterModifier: MeshModifier = {
         }
       }
 
+      dispX *= gate; dispY *= gate; dispZ *= gate;
       const totalDisp = Math.sqrt(dispX * dispX + dispY * dispY + dispZ * dispZ);
       if (totalDisp > 1e-10) {
         newPositions[vi * 3] += dispX;
