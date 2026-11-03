@@ -30,6 +30,10 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIR = path.resolve(__dirname, "../client");
 
+const ANGLE_BACKEND = process.platform === "win32" ? "--use-angle=d3d11"
+  : process.platform === "darwin" ? "--use-angle=metal"
+  : "--use-angle=gl";
+
 // ── Args ─────────────────────────────────────────────────────────────
 
 interface Opts {
@@ -247,7 +251,9 @@ async function main() {
       "--enable-gpu",                 // Explicitly enable GPU in headless mode (off by default)
       "--ignore-gpu-blocklist",       // Bypass driver blocklists to ensure hardware GPU usage
       "--use-gl=angle",               // Use ANGLE graphics backend (translates GL → native API)
-      "--use-angle=d3d11",            // Use Direct3D 11 on Windows for real hardware rendering
+      // The ANGLE backend is platform-specific. Passing the Windows one on macOS leaves WebGL
+      // unavailable altogether and the hardware check below aborts the export.
+      ANGLE_BACKEND,
       "--disable-software-rasterizer",// Prevent fallback to SwiftShader CPU-based renderer
       "--disable-dev-shm-usage",
       //"--use-gl=desktop", // Use the desktop OpenGL driver
