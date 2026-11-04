@@ -12,3 +12,4 @@ export * from "./terrainStyle";
 export * from "./terrainScatter";
 export * from "./terrainMeta";
 export * from "./generateTerrain";
+export * from "./previewQuality";

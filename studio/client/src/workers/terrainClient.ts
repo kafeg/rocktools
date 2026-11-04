@@ -6,6 +6,8 @@
  */
 import {
   generateTerrain as runSync,
+  previewTerrainParams,
+  previewTerrainStyle,
   type TerrainParams,
   type TerrainStyle,
   type TerrainResult,
@@ -49,11 +51,22 @@ function getWorker(): Worker | null {
   return worker;
 }
 
+/**
+ * `quality: "preview"` (the default) caps the grid resolution and the rock
+ * template detail for the on-screen viewer — see utils/terrain/previewQuality.ts
+ * for the measurements behind it. Anything that WRITES a terrain (GLB export,
+ * CLI, metadata) passes "export" and gets the params exactly as authored.
+ */
 export function generateTerrainAsync(
   style: TerrainStyle,
   params: TerrainParams,
   surfaceSeed: number,
+  opts?: { quality?: "preview" | "export" },
 ): Promise<TerrainPayload> {
+  if ((opts?.quality ?? "preview") === "preview") {
+    style = previewTerrainStyle(style);
+    params = previewTerrainParams(params);
+  }
   const w = getWorker();
   if (!w) {
     // Synchronous fallback (blocks, but keeps things working without a worker).

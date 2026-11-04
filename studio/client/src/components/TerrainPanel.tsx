@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStudioStore } from "../stores/useStudioStore";
 import { exportTerrainGLB } from "../utils/export";
-import { deriveTerrainStyle, type TerrainParams } from "../utils/terrain";
+import { deriveTerrainStyle, previewResolution, type TerrainParams } from "../utils/terrain";
+import { generateTerrainAsync } from "../workers/terrainClient";
 
 /** A labelled numeric slider matching the studio's control style. */
 function Slider({
@@ -86,11 +87,16 @@ export default function TerrainPanel() {
 
   async function handleExport(resolution: number) {
     const st = store.getState();
-    if (!st.terrainMesh) return;
+    if (!st.currentMeshObj) return;
     setIsExporting(true);
     try {
+      // The viewer holds a COARSER preview mesh (utils/terrain/previewQuality.ts),
+      // so re-generate at the authored resolution before baking the GLB.
+      const full = await generateTerrainAsync(style, st.terrainParams, st.surfaceSeed, {
+        quality: "export",
+      });
       const shaderParams = st.collectShaderParams();
-      await exportTerrainGLB(st.terrainMesh, st.terrainScatter, shaderParams, resolution, st.surfaceSeed, st.terrainMeta);
+      await exportTerrainGLB(full.mesh, full.scatter, shaderParams, resolution, st.surfaceSeed, full.meta);
       flash(`GLB ${resolution}px exported`);
     } catch (e) {
       store.getState().setError(`Terrain export failed: ${e}`);
@@ -219,7 +225,8 @@ export default function TerrainPanel() {
           <Slider label="Footprint" value={params.footprint} min={1} max={80} step={1}
             onChange={(v) => setParam("footprint", v)} fmt={(v) => `${v.toFixed(0)} (${(v / 20).toFixed(1)}× tile)`} />
           <Slider label="Resolution" value={params.resolution} min={64} max={1280} step={64}
-            onChange={(v) => setParam("resolution", v)} fmt={(v) => `${v}²`} />
+            onChange={(v) => setParam("resolution", v)}
+            fmt={(v) => (previewResolution(v) < v ? `${v}² (preview ${previewResolution(v)}²)` : `${v}²`)} />
           <Slider label="Detail boost" value={params.detailBoost} min={0.5} max={4} step={0.25}
             onChange={(v) => setParam("detailBoost", v)} fmt={(v) => `${v}×`} />
           <Slider label="Erosion" value={params.erosion} min={0} max={1} step={0.05}
@@ -262,8 +269,11 @@ export default function TerrainPanel() {
 
         {info && (
           <div className="space-y-1 text-[11px] font-mono pt-1 border-t border-space-border/40">
-            <div className="flex justify-between"><span className="text-space-dim">Vertices</span><span>{info.nodes.toLocaleString()}</span></div>
-            <div className="flex justify-between"><span className="text-space-dim">Triangles</span><span>{info.tris.toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-space-dim">Preview</span><span>{info.nodes.toLocaleString()} v · {info.tris.toLocaleString()} tri</span></div>
+            <div className="flex justify-between">
+              <span className="text-space-dim">Export</span>
+              <span>{(params.resolution ** 2).toLocaleString()} v · {(2 * (params.resolution - 1) ** 2).toLocaleString()} tri</span>
+            </div>
             {meta && (
               <>
                 <div className="flex justify-between"><span className="text-space-dim">Rocks</span><span>{meta.stats.rockCount.toLocaleString()}</span></div>

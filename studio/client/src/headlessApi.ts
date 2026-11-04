@@ -9,7 +9,12 @@ import { useStudioStore } from "./stores/useStudioStore";
 import { runRocktool, isWasmAvailable } from "./wasm/rockcreateWasm";
 import { exportGLBToBuffer, exportRuntimeGLBToBuffer, exportTerrainGLBToBuffer, exportTerrainRuntimeGLBToBuffer } from "./utils/export";
 import { normalizeObj } from "./utils/meshParsing";
-import { deriveTerrainStyle, generateTerrain as runGenerateTerrain } from "./utils/terrain";
+import {
+  deriveTerrainStyle,
+  generateTerrain as runGenerateTerrain,
+  setTerrainPreviewQuality,
+  type TerrainPreviewQuality,
+} from "./utils/terrain";
 
 function glbToBase64(glb: ArrayBuffer): string {
   const bytes = new Uint8Array(glb);
@@ -298,6 +303,9 @@ async function exportTerrainImage(
 
   if (paramsOverride) store.setTerrainParams(paramsOverride);
   store.setSurfaceSeed(surfaceSeed);
+  // The thumbnail shows what the EXPORT writes, so lift the interactive preview
+  // caps (utils/terrain/previewQuality.ts) for this capture.
+  setTerrainPreviewQuality(null);
   store.setViewMode("surface"); // may auto-trigger generate when no terrain yet
   if (!useStudioStore.getState().isGeneratingTerrain) store.generateTerrain();
 
@@ -345,6 +353,7 @@ async function exportTerrainImage(
   try {
     return await exportImage(width, height, "jpg", 0.95, false);
   } finally {
+    setTerrainPreviewQuality({});
     scene.remove(capSun, capFill, capAmb);
     capSun.dispose();
     capFill.dispose();
@@ -362,6 +371,12 @@ export function installHeadlessApi() {
 
     importConfig(config: { sourceType: string; baseMesh: string; createParams: Record<string, any>; steps: Array<{ tool: string; params: Record<string, any>; enabled?: boolean }>; terrain?: { params: any; surfaceSeed: number; variants: Array<number | { seed: number; params?: any }> } }) {
       useStudioStore.getState().importPipelineConfig(config);
+    },
+
+    /** Interactive-preview quality caps; `null` previews at full export
+     *  quality. See utils/terrain/previewQuality.ts. */
+    setPreviewQuality(q: Partial<TerrainPreviewQuality> | null) {
+      setTerrainPreviewQuality(q);
     },
 
     /** Override terrain params before exportTerrainGLB — lets the CLI vary
