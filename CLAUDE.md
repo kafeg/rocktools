@@ -72,6 +72,9 @@ Vertex displacement applied after WASM pipeline. Each modifier in `utils/`:
 - `ridgeModifier.ts` — linear ridges/grooves
 - `fissureModifier.ts` — branching fracture cracks
 - `layerModifier.ts` — stratification bands
+- `thickenModifier.ts` — REPAIR, not a feature: pulls surface with no rock behind it back onto the
+  body, removing the blades and long creases the 26-triangle base hull prints through
+  (`oni/docs/reviews/asteroid-creases-2026-11-04.md` §8). Runs after the feature modifiers.
 
 Registry: `utils/modifierMap.ts`. Heightmap tracking: `utils/heightmap.ts`.
 Feature data (which vertices belong to which feature) passed to shaders.

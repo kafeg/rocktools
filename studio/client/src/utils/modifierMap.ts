@@ -6,6 +6,7 @@ import { fissureModifier } from "./fissureModifier";
 import { layerModifier } from "./layerModifier";
 import { pitModifier } from "./pitModifier";
 import { ridgeModifier } from "./ridgeModifier";
+import { thickenModifier } from "./thickenModifier";
 import { rockModifier } from "./rockModifier";
 import type { MeshData } from "./meshModifiers";
 
@@ -18,5 +19,6 @@ export const MESH_MODIFIER_MAP: Record<string, { apply: (mesh: MeshData, params:
   "mesh:layers": layerModifier,
   "mesh:pits": pitModifier,
   "mesh:ridges": ridgeModifier,
+  "mesh:thicken": thickenModifier,
   "mesh:rocks": rockModifier,
 };

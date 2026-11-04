@@ -63,6 +63,15 @@ const STEP_PARAM_OVERRIDES: Record<string, Record<string, ParamMetaEntry>> = {
     size:     { label: "Size",     tip: "Facet radius (fraction of mesh radius)",        min: 0.05, max: 0.8, step: 0.05, type: "slider" },
     flatness: { label: "Flatness", tip: "How flat the facets become (0=none, 1=fully flat)", min: 0, max: 1, step: 0.05, type: "slider" },
   },
+  "mesh:thicken": {
+    threshold:        { label: "Threshold",  tip: "Surface with less rock than this behind it is repaired (fraction of mesh radius)", min: 0.01, max: 0.12, step: 0.005, type: "slider" },
+    strength:         { label: "Strength",   tip: "0 = measure only, 1 = pull fully onto the body's shape",            min: 0,  max: 1,   step: 0.05, type: "slider" },
+    spread:           { label: "Spread",     tip: "Rings of surface the repair fades out over",                        min: 1,  max: 10,  step: 1,    type: "integer" },
+    smoothPasses:     { label: "Blend",      tip: "Averaging passes over the repair weight inside that band",          min: 0,  max: 24,  step: 1,    type: "integer" },
+    referencePasses:  { label: "Reach",      tip: "Smoothing passes defining the body's underlying shape — more reaches past a bigger fin", min: 8, max: 240, step: 8, type: "integer" },
+    rounds:           { label: "Rounds",     tip: "Measure-then-repair rounds",                                        min: 1,  max: 12,  step: 1,    type: "integer" },
+    grainPasses:      { label: "Grain",      tip: "What counts as surface grain; the repair puts back the grain it smooths off (0 = off)", min: 0, max: 8, step: 1, type: "integer" },
+  },
   "mesh:rocks": {
     count:      { label: "Count",     tip: "Number of rock objects to scatter on the surface", min: 1,     max: 60,  step: 1,    type: "integer" },
     minSize:    { label: "Min size",  tip: "Minimum rock size (fraction of mesh radius)",      min: 0.005, max: 0.15, step: 0.005, type: "slider" },

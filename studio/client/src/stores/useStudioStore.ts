@@ -421,6 +421,20 @@ export const MESH_STEPS = {
       seed: 1,
     },
   },
+  "mesh:thicken": {
+    label: "thicken",
+    description: "Repair: pulls surface with no rock behind it back onto the body (de-blades sharp hull folds)",
+    color: "accent",
+    params: {
+      threshold: 0.05,
+      strength: 1,
+      spread: 4,
+      smoothPasses: 8,
+      referencePasses: 96,
+      rounds: 8,
+      grainPasses: 3,
+    },
+  },
   "mesh:facets": {
     label: "facets",
     description: "Planar faceting: flattens surface regions into diamond-like faces (Bennu style)",
