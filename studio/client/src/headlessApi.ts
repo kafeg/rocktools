@@ -9,7 +9,12 @@ import { useStudioStore } from "./stores/useStudioStore";
 import { runRocktool, isWasmAvailable } from "./wasm/rockcreateWasm";
 import { exportGLBToBuffer, exportRuntimeGLBToBuffer, exportTerrainGLBToBuffer, exportTerrainRuntimeGLBToBuffer } from "./utils/export";
 import { normalizeObj } from "./utils/meshParsing";
-import { deriveTerrainStyle, generateTerrain as runGenerateTerrain } from "./utils/terrain";
+import {
+  deriveTerrainStyle,
+  generateTerrain as runGenerateTerrain,
+  setTerrainPreviewQuality,
+  type TerrainPreviewQuality,
+} from "./utils/terrain";
 
 function glbToBase64(glb: ArrayBuffer): string {
   const bytes = new Uint8Array(glb);
@@ -184,6 +189,21 @@ async function exportImage(
 ): Promise<string> {
   const { gl, scene, camera } = await waitForRendererRefs();
 
+  // FREEZE THE SCENE FIRST. The viewer spins the mesh (autoRotate, 0.3 rad/s)
+  // and draws a dev grid, both on by default — so an unfrozen capture catches
+  // the body at whatever angle the clock happened to reach, and puts the grid
+  // in the bottom of the frame. Two captures of the same config then differ,
+  // which makes the images useless for comparing one parameter against another.
+  // The UI keeps both; only the capture is frozen, and it is restored after.
+  const store = useStudioStore.getState();
+  const prevAutoRotate = store.autoRotate;
+  const prevShowGrid = store.showGrid;
+  if (prevAutoRotate) store.setAutoRotate(false);
+  if (prevShowGrid) store.setShowGrid(false);
+  // Let the frozen state reach the scene graph before reading pixels.
+  await nextFrame();
+  await nextFrame();
+
   // Adjust camera aspect ratio to match the render target resolution aspect ratio
   let originalAspect: number | undefined;
   const isPerspective = (camera as any).isPerspectiveCamera || camera instanceof THREE.PerspectiveCamera;
@@ -220,6 +240,8 @@ async function exportImage(
     persCam.aspect = originalAspect;
     persCam.updateProjectionMatrix();
   }
+  if (prevAutoRotate) useStudioStore.getState().setAutoRotate(true);
+  if (prevShowGrid) useStudioStore.getState().setShowGrid(true);
 
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -281,6 +303,9 @@ async function exportTerrainImage(
 
   if (paramsOverride) store.setTerrainParams(paramsOverride);
   store.setSurfaceSeed(surfaceSeed);
+  // The thumbnail shows what the EXPORT writes, so lift the interactive preview
+  // caps (utils/terrain/previewQuality.ts) for this capture.
+  setTerrainPreviewQuality(null);
   store.setViewMode("surface"); // may auto-trigger generate when no terrain yet
   if (!useStudioStore.getState().isGeneratingTerrain) store.generateTerrain();
 
@@ -328,6 +353,7 @@ async function exportTerrainImage(
   try {
     return await exportImage(width, height, "jpg", 0.95, false);
   } finally {
+    setTerrainPreviewQuality({});
     scene.remove(capSun, capFill, capAmb);
     capSun.dispose();
     capFill.dispose();
@@ -345,6 +371,12 @@ export function installHeadlessApi() {
 
     importConfig(config: { sourceType: string; baseMesh: string; createParams: Record<string, any>; steps: Array<{ tool: string; params: Record<string, any>; enabled?: boolean }>; terrain?: { params: any; surfaceSeed: number; variants: Array<number | { seed: number; params?: any }> } }) {
       useStudioStore.getState().importPipelineConfig(config);
+    },
+
+    /** Interactive-preview quality caps; `null` previews at full export
+     *  quality. See utils/terrain/previewQuality.ts. */
+    setPreviewQuality(q: Partial<TerrainPreviewQuality> | null) {
+      setTerrainPreviewQuality(q);
     },
 
     /** Override terrain params before exportTerrainGLB — lets the CLI vary
