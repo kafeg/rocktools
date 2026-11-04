@@ -421,6 +421,11 @@ async function exportImageSheet(
   });
   const lightStart = lights.map((l) => l.position.clone());
 
+  // Let the renderer settle before the first tile: taken cold, it can come out a shade
+  // off the other eight, and a sheet is only worth anything if its tiles are comparable.
+  await nextFrame();
+  await nextFrame();
+
   for (let i = 0; i < views; i++) {
     const col = i % cols;
     const row = Math.floor(i / cols);
