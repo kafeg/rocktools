@@ -365,6 +365,64 @@ async function exportTerrainImage(
   }
 }
 
+
+/**
+ * A CONTACT SHEET: the same body from several sides, tiled into one image.
+ *
+ * One camera cannot say whether a rock is believable — a blade is invisible
+ * head-on and obvious from the side, and a shape that reads well from the
+ * studio's default angle can be a slab from behind. Judging a fleet by single
+ * captures is how a bad batch gets shipped, so the sheet is the unit of review.
+ *
+ * The camera orbits Y at the viewer's own elevation and distance, so every tile
+ * is the same framing of the same mesh and only the azimuth differs; the
+ * camera is restored afterwards. Tiles are laid out left to right, top to
+ * bottom, starting at the viewer's own angle.
+ */
+async function exportImageSheet(
+  tile: number = 540,
+  views: number = 4,
+  format: "png" | "jpg" = "jpg",
+  quality: number = 0.9,
+): Promise<string> {
+  const { camera } = await waitForRendererRefs();
+  const cols = Math.ceil(Math.sqrt(views));
+  const rows = Math.ceil(views / cols);
+  const sheet = document.createElement("canvas");
+  sheet.width = cols * tile;
+  sheet.height = rows * tile;
+  const ctx = sheet.getContext("2d")!;
+  ctx.fillStyle = "#05080f";
+  ctx.fillRect(0, 0, sheet.width, sheet.height);
+
+  const start = camera.position.clone();
+  const radius = Math.hypot(start.x, start.z);
+  const baseAngle = Math.atan2(start.z, start.x);
+
+  for (let i = 0; i < views; i++) {
+    const a = baseAngle + (i * Math.PI * 2) / views;
+    camera.position.set(Math.cos(a) * radius, start.y, Math.sin(a) * radius);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    await nextFrame();
+    const b64 = await exportImage(tile, tile, "png", 1, false);
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("sheet tile failed to decode"));
+      img.src = "data:image/png;base64," + b64;
+    });
+    ctx.drawImage(img, (i % cols) * tile, Math.floor(i / cols) * tile);
+  }
+
+  camera.position.copy(start);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+
+  const mime = format === "jpg" ? "image/jpeg" : "image/png";
+  return sheet.toDataURL(mime, format === "jpg" ? quality : undefined).split(",")[1]!;
+}
+
 export function installHeadlessApi() {
   (window as any).__rocktools = {
     store: useStudioStore,
@@ -414,6 +472,11 @@ export function installHeadlessApi() {
       height: number = 1080,
     ): Promise<string> {
       return exportTerrainImage(surfaceSeed, paramsOverride, width, height);
+    },
+
+    /** Several sides of the body tiled into one reviewable image. */
+    async exportImageSheet(tile: number = 540, views: number = 4): Promise<string> {
+      return exportImageSheet(tile, views);
     },
 
     async exportImage(

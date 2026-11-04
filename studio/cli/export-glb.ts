@@ -48,6 +48,8 @@ interface Opts {
   runtime: boolean;
   materialOutput: string | null;
   captureOutput: string | null;
+  /** 1 = the single view the studio shows; more = a contact sheet of that many sides. */
+  captureViews: number;
   terrain: boolean;
   surfaceSeeds: number[] | null;
   terrainImage: boolean;
@@ -59,7 +61,7 @@ function parseArgs(): Opts {
     config: "", output: "", resolution: 2048,
     serverUrl: null, staticDir: null, timeout: 720_000,
     chromiumPath: null, headful: false, runtime: false, materialOutput: null,
-    captureOutput: null, terrain: false, surfaceSeeds: null, terrainImage: true,
+    captureOutput: null, captureViews: 1, terrain: false, surfaceSeeds: null, terrainImage: true,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -75,6 +77,7 @@ function parseArgs(): Opts {
       case "--runtime": opts.runtime = true; break;
       case "--material-output": opts.materialOutput = argv[++i]!; break;
       case "--capture-output": opts.captureOutput = argv[++i]!; break;
+      case "--capture-views": opts.captureViews = Math.max(1, parseInt(argv[++i]!) || 1); break;
       case "--terrain": opts.terrain = true; break;
       case "--no-terrain-image": opts.terrainImage = false; break;
       case "--surface-seed":
@@ -98,6 +101,7 @@ function parseArgs(): Opts {
           "  --runtime               Export runtime GLB with feature attributes instead of baked albedo",
           "  --material-output <p>   Write asteroid-material JSON sidecar",
           "  --capture-output <p>    Capture rendered JPG image of the asteroid to path",
+          "  --capture-views <n>     Tile n sides into one contact sheet (default 1 — one view)",
           "  --timeout <ms>          Max wait time (default: 720000)",
         ].join("\n"));
         process.exit(0);
@@ -431,9 +435,13 @@ async function main() {
     }
 
     if (opts.captureOutput) {
-      console.error("  Capturing image (1080x1080)...");
-      const imageBase64: string = await page.evaluate(() =>
-        (window as any).__rocktools.exportImage(1080, 1080, "jpg", 0.92, false)
+      const views = opts.captureViews;
+      console.error(views > 1 ? `  Capturing a ${views}-view sheet...` : "  Capturing image (1080x1080)...");
+      const imageBase64: string = await page.evaluate(
+        (n: number) => n > 1
+          ? (window as any).__rocktools.exportImageSheet(540, n)
+          : (window as any).__rocktools.exportImage(1080, 1080, "jpg", 0.92, false),
+        views,
       );
       const imageBuffer = Buffer.from(imageBase64, "base64");
       const imgPath = path.resolve(opts.captureOutput);
