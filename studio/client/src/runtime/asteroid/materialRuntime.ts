@@ -884,6 +884,8 @@ export function applyAsteroidMaterialParams(
   uniforms.uNormalMap.value = textureSet.normal;
   uniforms.uHasTexture.value = merged.texture !== "none" ? 1 : 0;
   uniforms.uApplyTint.value = merged.applyTint ? 1 : 0;
+  uniforms.uTextureTiling.value = merged.textureTiling;
+  uniforms.uDetile.value = merged.detile ? 1 : 0;
   uniforms.uAoStrength.value = merged.aoStrength;
   uniforms.uAoRadius.value = merged.aoRadius;
   uniforms.uFrostAmount.value = merged.frostAmount;

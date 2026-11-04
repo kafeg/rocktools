@@ -37,6 +37,10 @@ export interface AsteroidMaterialParams {
   metalness: number;
   texture: string;
   applyTint: boolean;
+  /** Texture repeats across the object: 0.5 stretches exactly one copy over it. */
+  textureTiling: number;
+  /** Hex-tiling: hides the repeat a tiling above 0.5 would otherwise show. */
+  detile: boolean;
   colorVariation: number;
   colorVariationScale: number;
   dustAmount: number;
@@ -76,6 +80,8 @@ export const DEFAULT_ASTEROID_MATERIAL_PARAMS: AsteroidMaterialParams = {
   metalness: 0.1,
   texture: "none",
   applyTint: false,
+  textureTiling: 0.5,
+  detile: false,
   colorVariation: 0.0,
   colorVariationScale: 2.5,
   dustAmount: 0.0,

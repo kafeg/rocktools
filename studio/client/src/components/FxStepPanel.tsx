@@ -9,6 +9,8 @@ const PARAM_META: Record<string, { label: string; tip: string; min: number; max:
   metalness:           { label: "Metalness",  tip: "0 = rock/dielectric, 1 = pure metal",           min: 0, max: 1, step: 0.01, type: "slider" },
   texture:             { label: "Texture",    tip: "Triplanar-projected surface texture",            min: 0, max: 0, step: 0,    type: "select" },
   applyTint:           { label: "Tint",       tip: "Apply base color as tint over texture",          min: 0, max: 0, step: 0,    type: "toggle" },
+  textureTiling:       { label: "Tiling",     tip: "Texture repeats across the object (0.5 = one stretched copy)", min: 0.5, max: 16, step: 0.5, type: "slider" },
+  detile:              { label: "De-tile",    tip: "Hex-tiling: hides the repeat a high tiling shows", min: 0, max: 0, step: 0,   type: "toggle" },
   colorVariation:      { label: "Variation",  tip: "Noise-based color variation intensity",          min: 0, max: 1, step: 0.01, type: "slider" },
   colorVariationScale: { label: "Scale",      tip: "Pattern size (lower = larger patches)",          min: 0.5, max: 10, step: 0.1, type: "slider" },
   dustAmount:          { label: "Amount",     tip: "Dust settles in concavities, peaks stay clean",  min: 0, max: 1, step: 0.01, type: "slider" },

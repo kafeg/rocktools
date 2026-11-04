@@ -209,6 +209,8 @@ export const FX_STEPS = {
       metalness: 0.1,
       texture: "none" as string,
       applyTint: false as boolean,
+      textureTiling: 0.5,
+      detile: false as boolean,
       colorVariation: 0.15,
       colorVariationScale: 2.5,
     },
