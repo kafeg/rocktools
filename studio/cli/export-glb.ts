@@ -265,7 +265,18 @@ async function main() {
       // The GPU check below needs a real window, so this cannot run headless — but a batch of a
       // hundred bodies then opens and steals focus from a hundred windows. Park it off-screen
       // unless the caller asked to watch (--headful).
-      ...(opts.headful ? [] : ["--window-position=-4000,-4000"]),
+      //
+      // A window with no pixels on any display is OCCLUDED, and Chrome stops compositing it:
+      // no frames, no ResizeObserver callbacks, so R3F never measures the canvas and never
+      // builds the renderer — every capture then times out on "Renderer refs are not
+      // initialized" while the GLB export, which needs no frame, still succeeds. These three
+      // keep the renderer awake off-screen; drop them and the parking below breaks capture.
+      ...(opts.headful ? [] : [
+        "--window-position=-4000,-4000",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+      ]),
 
       // ── THESE FLAGS MUST NOT BE ENABLED ──
       // They force SwiftShader (CPU software renderer) which destroys procedural texture quality:

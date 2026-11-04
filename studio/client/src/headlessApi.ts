@@ -385,7 +385,7 @@ async function exportImageSheet(
   format: "png" | "jpg" = "jpg",
   quality: number = 0.9,
 ): Promise<string> {
-  const { camera } = await waitForRendererRefs();
+  const { scene, camera } = await waitForRendererRefs();
   const cols = Math.ceil(Math.sqrt(views));
   const rows = Math.ceil(views / cols);
   const sheet = document.createElement("canvas");
@@ -399,11 +399,28 @@ async function exportImageSheet(
   const radius = Math.hypot(start.x, start.z);
   const baseAngle = Math.atan2(start.z, start.x);
 
+  // Turn the key lights with the camera. A fixed sun puts three of four views on the night
+  // side, and a sheet of black silhouettes says nothing about the shape it was taken to judge.
+  // Every view then carries the SAME relative lighting, which is what makes the four
+  // comparable: what differs between tiles is the body, not the hour.
+  const lights: THREE.DirectionalLight[] = [];
+  scene.traverse((o) => {
+    if ((o as THREE.DirectionalLight).isDirectionalLight) lights.push(o as THREE.DirectionalLight);
+  });
+  const lightStart = lights.map((l) => l.position.clone());
+
   for (let i = 0; i < views; i++) {
     const a = baseAngle + (i * Math.PI * 2) / views;
     camera.position.set(Math.cos(a) * radius, start.y, Math.sin(a) * radius);
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld();
+    const d = a - baseAngle;
+    const cd = Math.cos(d), sd = Math.sin(d);
+    for (let k = 0; k < lights.length; k++) {
+      const p0 = lightStart[k]!;
+      lights[k]!.position.set(p0.x * cd - p0.z * sd, p0.y, p0.x * sd + p0.z * cd);
+      lights[k]!.updateMatrixWorld();
+    }
     await nextFrame();
     const b64 = await exportImage(tile, tile, "png", 1, false);
     const img = new Image();
@@ -418,6 +435,10 @@ async function exportImageSheet(
   camera.position.copy(start);
   camera.lookAt(0, 0, 0);
   camera.updateMatrixWorld();
+  for (let k = 0; k < lights.length; k++) {
+    lights[k]!.position.copy(lightStart[k]!);
+    lights[k]!.updateMatrixWorld();
+  }
 
   const mime = format === "jpg" ? "image/jpeg" : "image/png";
   return sheet.toDataURL(mime, format === "jpg" ? quality : undefined).split(",")[1]!;
