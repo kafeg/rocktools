@@ -61,7 +61,7 @@ function parseArgs(): Opts {
     config: "", output: "", resolution: 2048,
     serverUrl: null, staticDir: null, timeout: 720_000,
     chromiumPath: null, headful: false, runtime: false, materialOutput: null,
-    captureOutput: null, captureViews: 1, terrain: false, surfaceSeeds: null, terrainImage: true,
+    captureOutput: null, captureViews: 9, terrain: false, surfaceSeeds: null, terrainImage: true,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -101,7 +101,7 @@ function parseArgs(): Opts {
           "  --runtime               Export runtime GLB with feature attributes instead of baked albedo",
           "  --material-output <p>   Write asteroid-material JSON sidecar",
           "  --capture-output <p>    Capture rendered JPG image of the asteroid to path",
-          "  --capture-views <n>     Tile n sides into one contact sheet (default 1 — one view)",
+          "  --capture-views <n>     Tile n views into one contact sheet (default 9 — three elevations)",
           "  --timeout <ms>          Max wait time (default: 720000)",
         ].join("\n"));
         process.exit(0);
@@ -298,6 +298,15 @@ async function main() {
     const page = await browser.newPage();
     page.setDefaultTimeout(opts.timeout);
     page.on("pageerror", (err) => console.error("  page error:", err.message));
+
+    // Drive the page's size and focus over CDP instead of inheriting them from a window
+    // that is parked off-screen. Without the metrics override the layout size depends on
+    // whether the compositor ever looked at the window, and R3F — which builds its
+    // renderer only once it measures a non-zero canvas — then initializes on some runs and
+    // not others, so a capture fails intermittently while the GLB export always succeeds.
+    await page.setViewport({ width: 1280, height: 1024, deviceScaleFactor: 1 });
+    const cdp = await page.createCDPSession();
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
 
     console.error("  Loading studio...");
     await page.goto(serverUrl!, { waitUntil: "domcontentloaded", timeout: 120_000 });

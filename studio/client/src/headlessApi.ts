@@ -159,7 +159,13 @@ async function exportRuntimeGLB(): Promise<string> {
   return btoa(binary);
 }
 
-async function waitForRendererRefs(timeoutMs: number = 15_000): Promise<{
+/**
+ * The renderer is built by R3F once it measures the canvas, which needs a composited
+ * frame. Off-screen (the CLI parks its window there) those frames can be slow, so this
+ * polls on a timer rather than requestAnimationFrame: rAF is itself throttled in an
+ * occluded window, which would make the wait outlast its own deadline.
+ */
+async function waitForRendererRefs(timeoutMs: number = 60_000): Promise<{
   gl: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.Camera;
@@ -174,7 +180,7 @@ async function waitForRendererRefs(timeoutMs: number = 15_000): Promise<{
 
     if (gl && scene && camera) return { gl, scene, camera };
 
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
 
   throw new Error("Renderer refs are not initialized");
@@ -374,20 +380,25 @@ async function exportTerrainImage(
  * studio's default angle can be a slab from behind. Judging a fleet by single
  * captures is how a bad batch gets shipped, so the sheet is the unit of review.
  *
- * The camera orbits Y at the viewer's own elevation and distance, so every tile
- * is the same framing of the same mesh and only the azimuth differs; the
- * camera is restored afterwards. Tiles are laid out left to right, top to
- * bottom, starting at the viewer's own angle.
+ * The camera keeps the viewer's distance and orbits Y, one full turn per ROW of
+ * the grid, and each row sits at its own elevation — the viewer's, then above,
+ * then below — so the poles are covered too. Framing never changes, the camera
+ * is restored afterwards, and tiles run left to right, top to bottom from the
+ * viewer's own angle.
  */
 async function exportImageSheet(
   tile: number = 540,
-  views: number = 4,
+  views: number = 9,
   format: "png" | "jpg" = "jpg",
   quality: number = 0.9,
 ): Promise<string> {
   const { scene, camera } = await waitForRendererRefs();
   const cols = Math.ceil(Math.sqrt(views));
   const rows = Math.ceil(views / cols);
+  // Each ROW is a full turn at its own elevation: the viewer's own, then from above, then
+  // from below. One elevation only ever shows the equator band, and a blade or a pit that
+  // sits over a pole is exactly what a sheet is taken to catch.
+  const ELEVATION_TIERS = [0, Math.PI / 5, -Math.PI / 5];
   const sheet = document.createElement("canvas");
   sheet.width = cols * tile;
   sheet.height = rows * tile;
@@ -396,8 +407,9 @@ async function exportImageSheet(
   ctx.fillRect(0, 0, sheet.width, sheet.height);
 
   const start = camera.position.clone();
-  const radius = Math.hypot(start.x, start.z);
+  const dist = start.length();
   const baseAngle = Math.atan2(start.z, start.x);
+  const baseElevation = Math.asin(Math.max(-1, Math.min(1, start.y / dist)));
 
   // Turn the key lights with the camera. A fixed sun puts three of four views on the night
   // side, and a sheet of black silhouettes says nothing about the shape it was taken to judge.
@@ -410,8 +422,12 @@ async function exportImageSheet(
   const lightStart = lights.map((l) => l.position.clone());
 
   for (let i = 0; i < views; i++) {
-    const a = baseAngle + (i * Math.PI * 2) / views;
-    camera.position.set(Math.cos(a) * radius, start.y, Math.sin(a) * radius);
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const a = baseAngle + (col * Math.PI * 2) / cols;
+    const el = Math.max(-1.4, Math.min(1.4, baseElevation + ELEVATION_TIERS[row % ELEVATION_TIERS.length]!));
+    const ring = Math.cos(el) * dist;
+    camera.position.set(Math.cos(a) * ring, Math.sin(el) * dist, Math.sin(a) * ring);
     camera.lookAt(0, 0, 0);
     camera.updateMatrixWorld();
     const d = a - baseAngle;
@@ -496,7 +512,7 @@ export function installHeadlessApi() {
     },
 
     /** Several sides of the body tiled into one reviewable image. */
-    async exportImageSheet(tile: number = 540, views: number = 4): Promise<string> {
+    async exportImageSheet(tile: number = 540, views: number = 9): Promise<string> {
       return exportImageSheet(tile, views);
     },
 
