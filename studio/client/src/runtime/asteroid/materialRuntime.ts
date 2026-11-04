@@ -61,6 +61,14 @@ export interface AsteroidShaderUniforms {
   uObjectToViewNormalMatrix: { value: THREE.Matrix3 };
   /** 1.0 = flat terrain (slope from normal.y), 0.0 = asteroid (radial slope). */
   uTerrainFlatMode: { value: number };
+  /**
+   * METRES per world unit, for the distance-faded terrain detail below. 1.0 (the
+   * default) is a scene whose world units ARE metres, which is what the game's
+   * surface and factory canvases use. A viewer that normalises the patch to a
+   * fixed on-screen size must set the real ratio, or every patch is shaded as if
+   * the camera stood at the same few metres from it whatever its footprint.
+   */
+  uMetresPerUnit: { value: number };
 }
 
 export type AsteroidTextureUrlResolver = (textureId: string, kind: AsteroidTextureKind) => string;
@@ -175,6 +183,7 @@ vFeature2 = featureData2;
 
 const FRAG_UNIFORMS = /* glsl */ `
 uniform float uTerrainFlatMode;
+uniform float uMetresPerUnit;
 uniform vec3 uBaseColor;
 uniform float uColorVariation;
 uniform float uColorVariationScale;
@@ -377,11 +386,15 @@ if (uFeatureIntensity > 0.01) {
 // NEAR-FIELD REGOLITH GRAIN (terrain patches): two octaves of high-frequency
 // procedural normal ripple — reads as packed sand/gravel instead of a smooth
 // blur when the camera is metres away. Fades out with view distance so the
-// far field keeps the clean macro shading (no shimmer). View units are metres
-// in the surface/factory canvases; the AU main scene only shows the patch at
-// close-up swap range, where full grain is exactly what we want.
+// far field keeps the clean macro shading (no shimmer). The bands below are in
+// METRES, so the view distance is converted with uMetresPerUnit: 1.0 where world
+// units are metres (the game's surface and factory canvases, and the AU main
+// scene, which only shows the patch at close-up swap range where full grain is
+// exactly what we want), and the real ratio in a viewer that scales the patch to
+// a fixed on-screen size. Without it a studio preview sits permanently inside
+// the near band and shows grain at a magnification the game never reaches.
 if (uTerrainFlatMode > 0.5) {
-  float grainVd = length(vViewPosition);
+  float grainVd = length(vViewPosition) * uMetresPerUnit;
   // NEAR grain (millimetre sand, only <22 m): unchanged — full crunch when you
   // are standing on the surface, off before it shimmers at range.
   float grainFade = 1.0 - smoothstep(6.0, 22.0, grainVd);
@@ -801,6 +814,7 @@ export function createAsteroidShaderUniforms(): AsteroidShaderUniforms {
     uMaterialDirectionObject: { value: new THREE.Vector3(1, 0.3, 0.2).normalize() },
     uObjectToViewNormalMatrix: { value: new THREE.Matrix3() },
     uTerrainFlatMode: { value: 0 },
+    uMetresPerUnit: { value: 1 },
   };
 }
 

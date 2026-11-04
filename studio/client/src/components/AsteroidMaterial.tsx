@@ -14,7 +14,16 @@ import { useStudioStore } from "../stores/useStudioStore";
 
 const studioTextureResolver = createAsteroidTextureUrlResolver(`${import.meta.env.BASE_URL}textures/`);
 
-export default function AsteroidMaterial({ wireframe, flatMode = false }: { wireframe: boolean; flatMode?: boolean }) {
+export default function AsteroidMaterial({
+  wireframe,
+  flatMode = false,
+  metresPerUnit = 1,
+}: {
+  wireframe: boolean;
+  flatMode?: boolean;
+  /** Metres per world unit — the terrain view scales its patch, so it passes the ratio. */
+  metresPerUnit?: number;
+}) {
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
   const textureRef = useRef<{ id: string; set: AsteroidTextureSet }>({
     id: "none",
@@ -41,6 +50,7 @@ export default function AsteroidMaterial({ wireframe, flatMode = false }: { wire
 
     applyAsteroidMaterialParams(mat, uniforms, params, { textureSet: textureRef.current.set });
     uniforms.uTerrainFlatMode.value = flatMode ? 1 : 0;
+    uniforms.uMetresPerUnit.value = metresPerUnit;
   });
 
   const params = useStudioStore.getState().collectShaderParams();

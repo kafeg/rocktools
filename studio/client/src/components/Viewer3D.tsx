@@ -125,7 +125,7 @@ function AsteroidMesh({ onModifying, onMeshError }: { onModifying: (v: boolean) 
 
 // ── Terrain (surface) rendering ──────────────────────────────────────
 
-function RockInstances({ template, instances }: { template: MeshData; instances: RockInstance[] }) {
+function RockInstances({ template, instances, metresPerUnit }: { template: MeshData; instances: RockInstance[]; metresPerUnit: number }) {
   const ref = useRef<THREE.InstancedMesh>(null);
   const geo = useMemo(() => meshDataToGeometry(template, { center: false }), [template]);
   useEffect(() => () => geo.dispose(), [geo]);
@@ -158,7 +158,7 @@ function RockInstances({ template, instances }: { template: MeshData; instances:
   if (instances.length === 0) return null;
   return (
     <instancedMesh ref={ref} args={[geo, undefined, instances.length]}>
-      <AsteroidMaterial wireframe={false} flatMode />
+      <AsteroidMaterial wireframe={false} flatMode metresPerUnit={metresPerUnit} />
     </instancedMesh>
   );
 }
@@ -192,16 +192,20 @@ function TerrainView({ onMeshError }: { onMeshError: (e: string | null) => void 
   }, [scatter]);
 
   if (!geometry) return null;
-  // Map the footprint to a consistent on-screen size (~5 world units wide).
+  // Map the footprint to a consistent on-screen size (~5 world units wide). The
+  // material's distance-faded detail is authored in metres, so it has to be told
+  // what a world unit is worth here — otherwise a 5-unit-wide patch is always
+  // "a few metres away" and shades as if the camera stood on it.
   const scale = 5 / Math.max(0.001, footprint);
+  const metresPerUnit = 1 / scale;
 
   return (
     <group scale={scale}>
       <mesh geometry={geometry}>
-        <AsteroidMaterial wireframe={wireframe} flatMode />
+        <AsteroidMaterial wireframe={wireframe} flatMode metresPerUnit={metresPerUnit} />
       </mesh>
       {grouped.map((g, i) => (
-        <RockInstances key={i} template={g.template} instances={g.instances} />
+        <RockInstances key={i} template={g.template} instances={g.instances} metresPerUnit={metresPerUnit} />
       ))}
     </group>
   );
