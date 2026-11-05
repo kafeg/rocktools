@@ -24,9 +24,10 @@ import {
   createField,
   type CraterLayerParams,
   type TerrainField,
+  type TerrainPolyline,
 } from "./terrainField";
 import { scatterRocks, type TerrainScatter } from "./terrainScatter";
-import { applyTerraces, applyScarps, applyHummocky, applyCellulite } from "./terrainFeatures";
+import { applyTerraces, applyScarps, applyHummocky, applyCellulite, applyPonds } from "./terrainFeatures";
 import { computeTerrainMeta, type TerrainMeta } from "./terrainMeta";
 import type { TerrainStyle } from "./terrainStyle";
 
@@ -70,6 +71,10 @@ export interface TerrainParams {
   talusAmount?: number;
   /** Cellulite strength [0..1]: soft rounded cellular texture in patches. */
   celluliteAmount?: number;
+  /** Ponded-regolith count (0 = none): dead-flat dust fills in the low ground. */
+  pondCount?: number;
+  /** Pond radius as a fraction of the footprint. */
+  pondRadius?: number;
 }
 
 export const DEFAULT_TERRAIN_PARAMS: TerrainParams = {
@@ -107,6 +112,7 @@ const LAYER = {
   SCARPS: 9,
   HUMMOCKY: 10,
   CELLULITE: 11,
+  PONDS: 12,
 } as const;
 
 export function generateTerrain(
@@ -280,9 +286,10 @@ export function generateTerrain(
   // ── Ridges (FEW linear features: count ∝ √area, not area) ─────────
   // Streak lines multiplied out of control at ∝ area — a wide patch was webbed
   // with them. √area keeps them as occasional accents, not an all-over network.
+  let ridgeLines: TerrainPolyline[] = [];
   if (style.ridges && params.ridgeDensity > 0) {
     const count = Math.max(0, Math.round(style.ridges.count * params.ridgeDensity * Math.sqrt(area)));
-    if (count > 0) applyLines(field, {
+    if (count > 0) ridgeLines = applyLines(field, {
       ...style.ridges, count,
       amount: style.ridges.amount * sizeAnchor,
       width: style.ridges.width * sizeAnchor,
@@ -296,12 +303,32 @@ export function generateTerrain(
   // most one on a patch, not a map-splitting rift.
   if (style.fissures && params.fissureDensity > 0) {
     const count = Math.max(0, Math.round(style.fissures.count * params.fissureDensity * Math.sqrt(area)));
+    // Handed the ridges so a groove never crosses one: a ridge and a trench
+    // meeting in an X is the single most synthetic-looking thing on a patch.
     if (count > 0) applyLines(field, {
       ...style.fissures, count,
       amount: style.fissures.amount * 2.0,
       width: style.fissures.width * 1.5,
       length: style.fissures.length * 1.2,
-    }, seed(LAYER.FISSURES));
+    }, seed(LAYER.FISSURES), ridgeLines);
+  }
+
+  // ── Ponded regolith (dust settling into the hollows) ──────────────
+  // AFTER craters and grooves so the dust finds the holes they just made, and
+  // before erosion so the slump pass can soften the rim it leaves.
+  if (params.pondCount && params.pondCount > 0) {
+    applyPonds(field, {
+      count: params.pondCount,
+      // pondRadius is a fraction of the FOOTPRINT, not of the reference tile, so
+      // it must NOT go through sizeAnchor — that shrank a 20 m pond to 1.5 m.
+      radius: params.pondRadius ?? 0.1,
+      feather: 0.35,
+      // 0.22 of the local relief was below the threshold of visibility on the
+      // impact-plains variant: on 18 m of relief it moved the floor by tens of
+      // centimetres and read as nothing. A pond has to be an obvious flat.
+      level: 0.45,
+      probes: 6,
+    }, seed(LAYER.PONDS));
   }
 
   // ── Thermal erosion (after all relief is laid down) ───────────────

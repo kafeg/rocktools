@@ -211,3 +211,103 @@ export function applyCellulite(field: TerrainField, p: CelluliteParams, seed: nu
     }
   }
 }
+
+// ── Regolith ponds (flat dust fills in the low ground) ───────────────
+
+export interface PondParams {
+  /** How many ponds to attempt across the patch. */
+  count: number;
+  /** Pond radius as a fraction of the footprint. */
+  radius: number;
+  /** Rim softness as a fraction of the radius — 0 is a stamped edge. */
+  feather: number;
+  /**
+   * Where inside the pond the dust settles, as a fraction of the local relief
+   * measured from its lowest point. 0 fills to the floor, 1 to the rim.
+   */
+  level: number;
+  /** Candidate sites tried per pond; the lowest-lying one wins. */
+  probes: number;
+}
+
+/**
+ * Ponded regolith: a dead-flat deposit of fine dust lying in the low ground, the
+ * way it does on Eros — a crater with a mirror-smooth floor inside an otherwise
+ * broken surface. This is the airless-body answer to dunes, which cannot form
+ * here at all: dunes need wind, and there is no atmosphere to supply it. What
+ * moves dust around instead is seismic shaking from impacts, which settles it
+ * into whatever hollow is nearest, level to the local gravity.
+ *
+ * Gameplay earns its place too: a pond is the flattest ground on a patch, so the
+ * factory's hex grid has somewhere to sit that is not a compromise.
+ *
+ * Each pond probes a few candidate centres and takes the lowest-lying one, so the
+ * dust lands in hollows rather than on slopes. Cells already above the fill line
+ * are untouched — the pond fills, it never excavates.
+ */
+export function applyPonds(field: TerrainField, p: PondParams, seed: number): void {
+  if (p.count <= 0 || p.radius <= 0) return;
+  const { res, size, heights } = field;
+  const rand = mulberry32(seed);
+  const radius = p.radius * size;
+  const half = size / 2;
+
+  /** Mean height in a coarse sample of the disc — cheap "how low is this spot". */
+  const sampleMean = (cx: number, cz: number): number => {
+    let sum = 0, n = 0;
+    for (let a = 0; a < 12; a++) {
+      const ang = (a / 12) * Math.PI * 2;
+      for (const f of [0, 0.5, 0.9]) {
+        const x = cx + Math.cos(ang) * radius * f;
+        const z = cz + Math.sin(ang) * radius * f;
+        const i = Math.round(((x + half) / size) * (res - 1));
+        const j = Math.round(((z + half) / size) * (res - 1));
+        if (i < 0 || j < 0 || i >= res || j >= res) continue;
+        sum += heights[j * res + i]!; n++;
+      }
+    }
+    return n ? sum / n : Infinity;
+  };
+
+  for (let k = 0; k < p.count; k++) {
+    let cx = 0, cz = 0, best = Infinity;
+    for (let t = 0; t < Math.max(1, p.probes); t++) {
+      const x = (rand() - 0.5) * (size - 2 * radius);
+      const z = (rand() - 0.5) * (size - 2 * radius);
+      const m = sampleMean(x, z);
+      if (m < best) { best = m; cx = x; cz = z; }
+    }
+
+    // Fill line: the local floor plus a slice of the local relief.
+    let lo = Infinity, hi = -Infinity;
+    const i0 = Math.max(0, Math.floor(((cx - radius + half) / size) * (res - 1)));
+    const i1 = Math.min(res - 1, Math.ceil(((cx + radius + half) / size) * (res - 1)));
+    const j0 = Math.max(0, Math.floor(((cz - radius + half) / size) * (res - 1)));
+    const j1 = Math.min(res - 1, Math.ceil(((cz + radius + half) / size) * (res - 1)));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const x = coord(i, res, size), z = coord(j, res, size);
+        if (Math.hypot(x - cx, z - cz) > radius) continue;
+        const h = heights[j * res + i]!;
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+    }
+    if (!isFinite(lo)) continue;
+    const fill = lo + (hi - lo) * p.level;
+
+    const feather = Math.max(1e-6, p.feather) * radius;
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const x = coord(i, res, size), z = coord(j, res, size);
+        const d = Math.hypot(x - cx, z - cz);
+        if (d > radius) continue;
+        const idx = j * res + i;
+        const h = heights[idx]!;
+        if (h >= fill) continue;                       // a pond fills, never digs
+        const edge = smoothstep(radius, radius - feather, d);
+        heights[idx] = h + (fill - h) * edge;
+      }
+    }
+  }
+}

@@ -338,30 +338,100 @@ export interface LineLayerParams {
   jaggedness: number;
   /** "ridge" → raise + featureData2.r, "fissure" → carve + featureData.b. */
   kind: "ridge" | "fissure";
+  /**
+   * Keep every line this far from the others, as a fraction of the footprint.
+   * Lines are laid down independently, so without this two of them cross in an X
+   * — a shape no landform makes, and the first thing that reads as "generated"
+   * on a finished patch. A candidate that comes closer is re-rolled.
+   */
+  minSeparation?: number;
 }
 
-export function applyLines(field: TerrainField, p: LineLayerParams, seed: number): void {
-  if (p.count <= 0) return;
+/** A laid-down line, so later layers can be asked to avoid it. */
+export type TerrainPolyline = Array<[number, number]>;
+
+/** Closest approach between two segments, used by the separation test. */
+function segmentDistance(
+  ax: number, az: number, bx: number, bz: number,
+  cx: number, cz: number, dx2: number, dz2: number,
+): number {
+  const pointSeg = (px: number, pz: number, x1: number, z1: number, x2: number, z2: number) => {
+    const vx = x2 - x1, vz = z2 - z1;
+    const len2 = vx * vx + vz * vz || 1e-9;
+    let u = ((px - x1) * vx + (pz - z1) * vz) / len2;
+    u = Math.min(1, Math.max(0, u));
+    return Math.hypot(px - (x1 + u * vx), pz - (z1 + u * vz));
+  };
+  // Proper crossing ⇒ distance 0. Orientation test on the two segments.
+  const o = (x1: number, z1: number, x2: number, z2: number, x3: number, z3: number) =>
+    Math.sign((x2 - x1) * (z3 - z1) - (z2 - z1) * (x3 - x1));
+  const o1 = o(ax, az, bx, bz, cx, cz), o2 = o(ax, az, bx, bz, dx2, dz2);
+  const o3 = o(cx, cz, dx2, dz2, ax, az), o4 = o(cx, cz, dx2, dz2, bx, bz);
+  if (o1 !== o2 && o3 !== o4) return 0;
+  return Math.min(
+    pointSeg(ax, az, cx, cz, dx2, dz2), pointSeg(bx, bz, cx, cz, dx2, dz2),
+    pointSeg(cx, cz, ax, az, bx, bz), pointSeg(dx2, dz2, ax, az, bx, bz),
+  );
+}
+
+/** Closest approach between two polylines. */
+function polylineDistance(a: TerrainPolyline, b: TerrainPolyline): number {
+  let best = Infinity;
+  for (let i = 0; i < a.length - 1; i++) {
+    for (let j = 0; j < b.length - 1; j++) {
+      const d = segmentDistance(a[i]![0], a[i]![1], a[i + 1]![0], a[i + 1]![1],
+                                b[j]![0], b[j]![1], b[j + 1]![0], b[j + 1]![1]);
+      if (d < best) best = d;
+      if (best === 0) return 0;
+    }
+  }
+  return best;
+}
+
+export function applyLines(
+  field: TerrainField,
+  p: LineLayerParams,
+  seed: number,
+  avoid: TerrainPolyline[] = [],
+): TerrainPolyline[] {
+  const placed: TerrainPolyline[] = [];
+  if (p.count <= 0) return placed;
   const rand = mulberry32(seed);
   const { res, size, heights, feature, feature2 } = field;
   const halfWidth = p.width * size;
   const amplitude = p.amount * size * (p.kind === "fissure" ? -1 : 1);
+  // Two lines whose troughs touch read as one forked landform, so the default gap
+  // is a couple of line widths. Ridges are asked to avoid nothing; fissures are
+  // handed the ridges, so the two layers do not cross each other either.
+  const gap = (p.minSeparation ?? p.width * 2.5) * size;
+  const MAX_TRIES = 12;
 
   for (let k = 0; k < p.count; k++) {
-    // Build a wavy polyline across the footprint.
+    // Build a wavy polyline across the footprint, re-rolling it while it runs
+    // into one already on the patch. After MAX_TRIES the line is DROPPED rather
+    // than forced: one landform fewer beats a cross.
     const segs = 12;
     const totalLen = p.length * size;
-    let px = (rand() - 0.5) * size;
-    let pz = (rand() - 0.5) * size;
-    let ang = rand() * Math.PI * 2;
-    const pts: Array<[number, number]> = [[px, pz]];
-    const step = totalLen / segs;
-    for (let s = 0; s < segs; s++) {
-      ang += (rand() - 0.5) * p.jaggedness * 1.2;
-      px += Math.cos(ang) * step;
-      pz += Math.sin(ang) * step;
-      pts.push([px, pz]);
+    let pts: TerrainPolyline | null = null;
+    for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
+      let px = (rand() - 0.5) * size;
+      let pz = (rand() - 0.5) * size;
+      let ang = rand() * Math.PI * 2;
+      const cand: TerrainPolyline = [[px, pz]];
+      const step = totalLen / segs;
+      for (let s = 0; s < segs; s++) {
+        ang += (rand() - 0.5) * p.jaggedness * 1.2;
+        px += Math.cos(ang) * step;
+        pz += Math.sin(ang) * step;
+        cand.push([px, pz]);
+      }
+      let clear = true;
+      for (const other of placed) if (polylineDistance(cand, other) < gap) { clear = false; break; }
+      if (clear) for (const other of avoid) if (polylineDistance(cand, other) < gap) { clear = false; break; }
+      if (clear) { pts = cand; break; }
     }
+    if (!pts) continue;
+    placed.push(pts);
 
     // Bounding box of the polyline + width.
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -398,6 +468,7 @@ export function applyLines(field: TerrainField, p: LineLayerParams, seed: number
       }
     }
   }
+  return placed;
 }
 
 function distanceToPolyline(x: number, z: number, pts: Array<[number, number]>): number {

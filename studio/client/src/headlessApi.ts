@@ -186,6 +186,46 @@ async function waitForRendererRefs(timeoutMs: number = 60_000): Promise<{
   throw new Error("Renderer refs are not initialized");
 }
 
+/**
+ * Block until every texture bound into the scene has actually decoded.
+ *
+ * `THREE.TextureLoader.load` hands back a Texture immediately and fills its
+ * `image` in later, so a capture taken too early renders the material WITHOUT
+ * its maps: flat, pale, no grain. That is not a subtle difference — the terrain
+ * thumbnails of 2026-11-05 measured a 10th-to-90th percentile luminance spread
+ * of only 12 levels, because they were all shot before the regolith arrived.
+ * Waiting on frames alone never fixes it; the decode is what has to finish.
+ */
+async function waitForTexturesReady(scene: THREE.Scene, timeoutMs: number = 20_000): Promise<void> {
+  const pending = (): THREE.Texture[] => {
+    const out: THREE.Texture[] = [];
+    scene.traverse((obj) => {
+      const mat = (obj as THREE.Mesh).material;
+      const list = Array.isArray(mat) ? mat : mat ? [mat] : [];
+      for (const m of list) {
+        for (const value of Object.values(m as unknown as Record<string, unknown>)) {
+          const t = value as THREE.Texture | null;
+          if (t && (t as THREE.Texture).isTexture && !t.image) out.push(t);
+        }
+        const uniforms = (m.userData as { uniforms?: Record<string, { value?: unknown }> }).uniforms;
+        for (const u of Object.values(uniforms ?? {})) {
+          const t = u?.value as THREE.Texture | null;
+          if (t && (t as THREE.Texture).isTexture && !t.image) out.push(t);
+        }
+      }
+    });
+    return out;
+  };
+
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    const left = pending();
+    if (left.length === 0) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+  console.warn(`[headless] ${pending().length} texture(s) still undecoded at capture time`);
+}
+
 async function exportImage(
   width: number,
   height: number,
@@ -206,6 +246,10 @@ async function exportImage(
   const prevShowGrid = store.showGrid;
   if (prevAutoRotate) store.setAutoRotate(false);
   if (prevShowGrid) store.setShowGrid(false);
+
+  // Every capture path funnels through here, so this is the one place the
+  // texture wait has to live.
+  await waitForTexturesReady(scene);
   // Let the frozen state reach the scene graph before reading pixels.
   await nextFrame();
   await nextFrame();
